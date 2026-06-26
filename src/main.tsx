@@ -109,6 +109,8 @@ function App() {
 }
 
 function CaptureView({ accessKey, onSave }: { accessKey: string; onSave: (entry: RecompEntry) => void }) {
+  const cameraInputId = 'capture-camera-input';
+  const uploadInputId = 'capture-upload-input';
   const [draft, setDraft] = useState<EntryDraft>(() => emptyDraft());
   const [confidence, setConfidence] = useState<FieldConfidence>({});
   const [preview, setPreview] = useState<string | null>(null);
@@ -184,11 +186,34 @@ function CaptureView({ accessKey, onSave }: { accessKey: string; onSave: (entry:
           {status === 'draft' && <span className="draft-chip">Draft</span>}
         </div>
 
-        <label className="dropzone">
+        <div className="dropzone" aria-live="polite">
           {preview ? <img src={preview} alt="Selected monitor preview" /> : <Camera size={34} />}
-          <span>{preview ? 'Change image' : 'Camera or upload'}</span>
-          <input accept="image/*" capture="environment" type="file" onChange={(event) => selectImage(event.target.files?.[0] ?? null)} />
-        </label>
+          <span>{preview ? imageFile?.name ?? 'Selected image' : 'No image selected'}</span>
+        </div>
+
+        <div className="capture-actions">
+          <label className="file-button primary" htmlFor={cameraInputId}>
+            <Camera size={18} /> Take photo
+          </label>
+          <label className="file-button" htmlFor={uploadInputId}>
+            <Upload size={18} /> Upload image
+          </label>
+          <input
+            id={cameraInputId}
+            className="visually-hidden-file"
+            accept="image/*"
+            capture="environment"
+            type="file"
+            onChange={(event) => selectImage(event.target.files?.[0] ?? null)}
+          />
+          <input
+            id={uploadInputId}
+            className="visually-hidden-file"
+            accept="image/*"
+            type="file"
+            onChange={(event) => selectImage(event.target.files?.[0] ?? null)}
+          />
+        </div>
 
         <div className="action-row">
           <button className="primary" type="button" disabled={!imageFile || status === 'extracting'} onClick={extract}>
