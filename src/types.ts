@@ -1,5 +1,7 @@
 export type WeightUnit = 'lb' | 'kg';
+export type HeightUnit = 'in' | 'cm';
 export type EntrySource = 'manual' | 'ai';
+export type ProfileSex = 'female' | 'male' | 'other' | 'unspecified';
 
 export type MeasurementField =
   | 'weight'
@@ -10,8 +12,27 @@ export type MeasurementField =
   | 'restingMetabolismKcal'
   | 'bodyAgeYears';
 
+export interface UserProfile {
+  id: string;
+  name: string;
+  sex: ProfileSex;
+  ageYears: string;
+  height: string;
+  heightUnit: HeightUnit;
+  weight: string;
+  weightUnit: WeightUnit;
+  skeletalMusclePercent: string;
+  visceralFatLevel: string;
+  restingMetabolismKcal: string;
+  baselineNotes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface RecompEntry {
   id: string;
+  profileId: string | null;
+  profileName: string;
   capturedAt: string;
   weight: number | null;
   weightUnit: WeightUnit;
@@ -29,7 +50,7 @@ export interface RecompEntry {
 
 export type ExtractionValues = Omit<
   RecompEntry,
-  'id' | 'capturedAt' | 'notes' | 'source' | 'createdAt' | 'updatedAt'
+  'id' | 'profileId' | 'profileName' | 'capturedAt' | 'notes' | 'source' | 'createdAt' | 'updatedAt'
 >;
 
 export type FieldConfidence = Partial<Record<MeasurementField | 'weightUnit', number>>;
@@ -40,6 +61,8 @@ export interface ExtractionResult {
 }
 
 export interface EntryDraft {
+  profileId: string | null;
+  profileName: string;
   capturedAt: string;
   weight: string;
   weightUnit: WeightUnit;
@@ -53,15 +76,6 @@ export interface EntryDraft {
   source: EntrySource;
 }
 
-export interface UserProfile {
-  weight: string;
-  weightUnit: WeightUnit;
-  bodyAgeYears: string;
-  skeletalMusclePercent: string;
-  visceralFatLevel: string;
-  restingMetabolismKcal: string;
-}
-
 export type ValidationIssueKind = 'missing' | 'range' | 'confidence';
 
 export interface ValidationIssue {
@@ -70,4 +84,4 @@ export interface ValidationIssue {
   message: string;
 }
 
-export type AppTab = 'capture' | 'log' | 'trends' | 'backup';
+export type AppTab = 'capture' | 'dashboard' | 'log' | 'profiles' | 'settings';

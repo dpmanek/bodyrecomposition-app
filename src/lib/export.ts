@@ -1,5 +1,5 @@
-import type { RecompEntry } from '../types';
-import { validateImportedEntry } from './validation';
+import type { RecompEntry, UserProfile } from '../types';
+import { validateImportedEntry, validateImportedProfile } from './validation';
 
 export const downloadFile = (filename: string, contents: string, type: string) => {
   const blob = new Blob([contents], { type });
@@ -11,8 +11,12 @@ export const downloadFile = (filename: string, contents: string, type: string) =
   URL.revokeObjectURL(url);
 };
 
-export const exportJson = (entries: RecompEntry[]) =>
-  JSON.stringify({ app: 'RecompTrack', version: 1, exportedAt: new Date().toISOString(), entries }, null, 2);
+export const exportJson = (entries: RecompEntry[], profiles: UserProfile[]) =>
+  JSON.stringify(
+    { app: 'RecompTrack', version: 2, exportedAt: new Date().toISOString(), profiles, entries },
+    null,
+    2,
+  );
 
 export const exportCsv = (entries: RecompEntry[]) => {
   const headers = [
@@ -34,19 +38,27 @@ export const exportCsv = (entries: RecompEntry[]) => {
   return [headers.join(','), ...rows].join('\n');
 };
 
-export const parseBackup = (raw: string): RecompEntry[] => {
+export const parseBackup = (raw: string): { entries: RecompEntry[]; profiles: UserProfile[] } => {
   const parsed = JSON.parse(raw) as unknown;
-  const values =
+  const entryValues =
     parsed && typeof parsed === 'object' && 'entries' in parsed
       ? (parsed as { entries: unknown }).entries
       : parsed;
-  if (!Array.isArray(values)) throw new Error('Backup must contain an entries array');
+  const profileValues =
+    parsed && typeof parsed === 'object' && 'profiles' in parsed
+      ? (parsed as { profiles: unknown }).profiles
+      : [];
+  if (!Array.isArray(entryValues)) throw new Error('Backup must contain an entries array');
 
-  const entries = values.map(validateImportedEntry).filter((entry): entry is RecompEntry => Boolean(entry));
-  if (entries.length === 0 && values.length > 0) {
+  const entries = entryValues.map(validateImportedEntry).filter((entry): entry is RecompEntry => Boolean(entry));
+  const profiles = Array.isArray(profileValues)
+    ? profileValues.map(validateImportedProfile).filter((profile): profile is UserProfile => Boolean(profile))
+    : [];
+
+  if (entries.length === 0 && entryValues.length > 0) {
     throw new Error('No valid entries found in backup');
   }
-  return entries;
+  return { entries, profiles };
 };
 
 const csvCell = (value: unknown) => {

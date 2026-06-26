@@ -4,6 +4,7 @@ import {
   BarChart3,
   Camera,
   CheckCircle2,
+  CirclePlus,
   Database,
   Download,
   FileUp,
@@ -11,14 +12,15 @@ import {
   NotebookTabs,
   Save,
   Settings,
+  Sparkles,
   Trash2,
   Upload,
   UserRound,
+  UsersRound,
   WandSparkles,
 } from 'lucide-react';
 import {
   CartesianGrid,
-  Legend,
   Line,
   LineChart as ReLineChart,
   ResponsiveContainer,
@@ -26,42 +28,91 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { AppTab, EntryDraft, ExtractionResult, FieldConfidence, MeasurementField, RecompEntry, UserProfile } from './types';
+import type {
+  AppTab,
+  EntryDraft,
+  ExtractionResult,
+  FieldConfidence,
+  MeasurementField,
+  ProfileSex,
+  RecompEntry,
+  UserProfile,
+} from './types';
 import { downloadFile, exportCsv, exportJson, parseBackup } from './lib/export';
 import { prepareImageForExtraction } from './lib/image';
-import { loadProfile, saveProfile } from './lib/profile';
+import { loadActiveProfileId, loadProfiles, saveActiveProfileId, saveProfiles } from './lib/profile';
 import { loadEntries, saveEntries, sortEntries } from './lib/storage';
-import { draftToEntry, emptyDraft, emptyProfile, entryToDraft, profileToDraftPatch, validateDraft } from './lib/validation';
+import {
+  createProfile,
+  draftToEntry,
+  emptyDraft,
+  entryToDraft,
+  profileToDraftPatch,
+  validateDraft,
+} from './lib/validation';
 import './styles.css';
+
+type ProfileField = keyof Pick<
+  UserProfile,
+  'weight' | 'ageYears' | 'height' | 'skeletalMusclePercent' | 'visceralFatLevel' | 'restingMetabolismKcal'
+>;
+
+const tabs: Array<{ id: AppTab; label: string; icon: React.ReactNode }> = [
+  { id: 'capture', label: 'Capture', icon: <Camera size={20} /> },
+  { id: 'dashboard', label: 'Dashboard', icon: <LineChart size={20} /> },
+  { id: 'log', label: 'Log', icon: <NotebookTabs size={20} /> },
+  { id: 'profiles', label: 'Profiles', icon: <UsersRound size={20} /> },
+  { id: 'settings', label: 'Settings', icon: <Settings size={20} /> },
+];
 
 const dailyFields: Array<{ key: MeasurementField; label: string; suffix?: string; step?: string }> = [
   { key: 'bodyFatPercent', label: 'Body fat', suffix: '%', step: '0.1' },
   { key: 'bmi', label: 'BMI', step: '0.1' },
 ];
 
-const profileFields: Array<{ key: keyof Omit<UserProfile, 'weightUnit'>; label: string; suffix?: string; step?: string }> = [
+const profileFields: Array<{ key: ProfileField; label: string; suffix?: string; step?: string }> = [
   { key: 'weight', label: 'Weight', step: '0.1' },
+  { key: 'ageYears', label: 'Age', suffix: 'years', step: '1' },
+  { key: 'height', label: 'Height', step: '0.1' },
   { key: 'skeletalMusclePercent', label: 'Skeletal muscle', suffix: '%', step: '0.1' },
   { key: 'visceralFatLevel', label: 'Visceral fat', step: '1' },
   { key: 'restingMetabolismKcal', label: 'Resting metabolism', suffix: 'kcal', step: '1' },
-  { key: 'bodyAgeYears', label: 'Age', suffix: 'years', step: '1' },
-];
-
-const tabs: Array<{ id: AppTab; label: string; icon: React.ReactNode }> = [
-  { id: 'capture', label: 'Capture', icon: <Camera size={20} /> },
-  { id: 'log', label: 'Log', icon: <NotebookTabs size={20} /> },
-  { id: 'trends', label: 'Trends', icon: <LineChart size={20} /> },
-  { id: 'backup', label: 'Backup', icon: <Settings size={20} /> },
 ];
 
 function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('capture');
   const [entries, setEntries] = useState<RecompEntry[]>(() => loadEntries());
-  const [profile, setProfile] = useState<UserProfile>(() => loadProfile());
+  const [profiles, setProfiles] = useState<UserProfile[]>(() => loadProfiles());
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(() => loadActiveProfileId(loadProfiles()));
   const [accessKey, setAccessKey] = useState(() => localStorage.getItem('recomptrack.accessKey.v1') ?? '');
 
+  const activeProfile = useMemo(
+    () => profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0],
+    [activeProfileId, profiles],
+  );
+  const activeEntries = useMemo(
+    () => entriesForProfile(entries, activeProfile?.id, profiles.length),
+    [activeProfile?.id, entries, profiles.length],
+  );
+
   useEffect(() => saveEntries(entries), [entries]);
-  useEffect(() => saveProfile(profile), [profile]);
+  useEffect(() => saveProfiles(profiles), [profiles]);
+  useEffect(() => saveActiveProfileId(activeProfile?.id ?? null), [activeProfile?.id]);
+  useEffect(() => {
+    const firstProfile = profiles[0];
+    if (!firstProfile) return;
+    setEntries((current) => {
+      if (!current.some((entry) => !entry.profileId)) return current;
+      return current.map((entry) =>
+        entry.profileId ? entry : { ...entry, profileId: firstProfile.id, profileName: firstProfile.name },
+      );
+    });
+  }, [profiles]);
+  useEffect(() => {
+    if (activeProfile && activeProfile.id !== activeProfileId) {
+      setActiveProfileId(activeProfile.id);
+    }
+  }, [activeProfile, activeProfileId]);
   useEffect(() => {
     if (accessKey.trim()) {
       localStorage.setItem('recomptrack.accessKey.v1', accessKey.trim());
@@ -80,30 +131,96 @@ function App() {
     }
   };
 
+  const upsertProfile = (profile: UserProfile) => {
+    const updatedAt = new Date().toISOString();
+    const savedProfile = { ...profile, updatedAt };
+    setProfiles((current) => {
+      const exists = current.some((item) => item.id === savedProfile.id);
+      return exists ? current.map((item) => (item.id === savedProfile.id ? savedProfile : item)) : [...current, savedProfile];
+    });
+    setEntries((current) =>
+      current.map((entry) =>
+        entry.profileId === savedProfile.id ? { ...entry, profileName: savedProfile.name, updatedAt } : entry,
+      ),
+    );
+    setActiveProfileId(savedProfile.id);
+  };
+
+  const addProfile = () => {
+    const profile = createProfile(`Profile ${profiles.length + 1}`);
+    setProfiles((current) => [...current, profile]);
+    setActiveProfileId(profile.id);
+    setActiveTab('profiles');
+  };
+
+  const deleteProfile = (profileId: string) => {
+    if (profiles.length <= 1) return;
+    if (!window.confirm('Delete this profile? Existing readings stay in the log as historical entries.')) return;
+    setProfiles((current) => current.filter((profile) => profile.id !== profileId));
+    if (activeProfileId === profileId) {
+      setActiveProfileId(profiles.find((profile) => profile.id !== profileId)?.id ?? null);
+    }
+  };
+
+  if (!activeProfile) {
+    return <EmptyState title="No profile found" text="Refresh the app to recreate the default profile." />;
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
         <div>
+          <p className="app-kicker">Local-first Omron journal</p>
           <h1>RecompTrack</h1>
-          <p>{entries.length ? `${entries.length} saved readings` : 'Daily Omron readings, locally saved'}</p>
         </div>
-        <div className="sync-dot" aria-label="Local only">
-          <Database size={17} />
-        </div>
+        <button className="profile-switch" type="button" onClick={() => setActiveTab('profiles')}>
+          <UserRound size={17} />
+          <span>{activeProfile.name}</span>
+        </button>
       </header>
 
       <section className="content">
-        {activeTab === 'capture' && <CaptureView accessKey={accessKey} profile={profile} onSave={upsertEntry} />}
-        {activeTab === 'log' && <LogView entries={entries} onSave={upsertEntry} onDelete={deleteEntry} />}
-        {activeTab === 'trends' && <TrendsView entries={entries} />}
-        {activeTab === 'backup' && (
-          <BackupView
-            entries={entries}
-            profile={profile}
+        {activeTab === 'capture' && (
+          <CaptureView
             accessKey={accessKey}
+            profile={activeProfile}
+            profiles={profiles}
+            onProfileChange={setActiveProfileId}
+            onSave={upsertEntry}
+          />
+        )}
+        {activeTab === 'dashboard' && <DashboardView profile={activeProfile} entries={activeEntries} />}
+        {activeTab === 'log' && (
+          <LogView
+            profile={activeProfile}
+            entries={activeEntries}
+            onDelete={deleteEntry}
+            onSave={upsertEntry}
+          />
+        )}
+        {activeTab === 'profiles' && (
+          <ProfilesView
+            activeProfileId={activeProfile.id}
+            entries={entries}
+            profiles={profiles}
+            onAddProfile={addProfile}
+            onDeleteProfile={deleteProfile}
+            onProfileChange={setActiveProfileId}
+            onProfileSave={upsertProfile}
+          />
+        )}
+        {activeTab === 'settings' && (
+          <SettingsView
+            accessKey={accessKey}
+            entries={entries}
+            profiles={profiles}
             onAccessKeyChange={setAccessKey}
-            onImport={setEntries}
-            onProfileChange={setProfile}
+            onImport={(importedEntries, importedProfiles) => {
+              if (importedProfiles.length) {
+                setProfiles((current) => mergeProfiles(current, importedProfiles));
+              }
+              setEntries((current) => mergeEntries(current, importedEntries));
+            }}
           />
         )}
       </section>
@@ -128,14 +245,16 @@ function App() {
 function CaptureView({
   accessKey,
   profile,
+  profiles,
+  onProfileChange,
   onSave,
 }: {
   accessKey: string;
   profile: UserProfile;
+  profiles: UserProfile[];
+  onProfileChange: (profileId: string) => void;
   onSave: (entry: RecompEntry) => void;
 }) {
-  const cameraInputId = 'capture-camera-input';
-  const uploadInputId = 'capture-upload-input';
   const [draft, setDraft] = useState<EntryDraft>(() => emptyDraft(profile));
   const [confidence, setConfidence] = useState<FieldConfidence>({});
   const [preview, setPreview] = useState<string | null>(null);
@@ -144,10 +263,19 @@ function CaptureView({
   const [message, setMessage] = useState('');
   const issues = validateDraft(draft, confidence);
 
+  useEffect(() => {
+    setDraft((current) => ({
+      ...current,
+      profileId: profile.id,
+      profileName: profile.name,
+      ...profileToDraftPatch(profile),
+    }));
+  }, [profile]);
+
   const selectImage = (file: File | null) => {
     setImageFile(file);
     setConfidence({});
-    setStatus(file ? 'idle' : 'idle');
+    setStatus('idle');
     setMessage('');
     if (preview) URL.revokeObjectURL(preview);
     setPreview(file ? URL.createObjectURL(file) : null);
@@ -171,8 +299,8 @@ function CaptureView({
       const result = (await response.json()) as ExtractionResult;
       setDraft((current) => ({
         ...current,
-        source: 'ai',
         ...profileToDraftPatch(profile),
+        source: 'ai',
         weight: valueToInput(result.values.weight) || profile.weight,
         weightUnit: result.values.weightUnit === 'kg' ? 'kg' : result.values.weightUnit === 'lb' ? 'lb' : profile.weightUnit,
         bmi: valueToInput(result.values.bmi),
@@ -180,11 +308,11 @@ function CaptureView({
         skeletalMusclePercent: valueToInput(result.values.skeletalMusclePercent) || profile.skeletalMusclePercent,
         visceralFatLevel: valueToInput(result.values.visceralFatLevel) || profile.visceralFatLevel,
         restingMetabolismKcal: valueToInput(result.values.restingMetabolismKcal) || profile.restingMetabolismKcal,
-        bodyAgeYears: valueToInput(result.values.bodyAgeYears) || profile.bodyAgeYears,
+        bodyAgeYears: valueToInput(result.values.bodyAgeYears) || profile.ageYears,
       }));
       setConfidence(result.confidence ?? {});
       setStatus('draft');
-      setMessage('AI draft ready. Review every value before saving.');
+      setMessage('AI draft ready. Confirm the numbers before saving.');
     } catch (error) {
       setStatus('error');
       setMessage(error instanceof Error ? error.message : 'Extraction failed');
@@ -192,8 +320,7 @@ function CaptureView({
   };
 
   const saveDraft = () => {
-    const entry = draftToEntry(draft);
-    onSave(entry);
+    onSave(draftToEntry(draft));
     setDraft(emptyDraft(profile));
     setConfidence({});
     setImageFile(null);
@@ -204,13 +331,28 @@ function CaptureView({
 
   return (
     <div className="view-stack">
+      <section className="hero-panel">
+        <div>
+          <span className="eyebrow">Active profile</span>
+          <h2>{profile.name}</h2>
+          <p>{profileSummary(profile)}</p>
+        </div>
+        <select value={profile.id} onChange={(event) => onProfileChange(event.target.value)} aria-label="Active profile">
+          {profiles.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+      </section>
+
       <section className="panel capture-panel">
         <div className="section-heading">
           <div>
-            <h2>Capture reading</h2>
-            <p>Photos are used for extraction only and are not stored.</p>
+            <h2>New reading</h2>
+            <p>Upload the HBF-306C display or enter FAT% and BMI manually.</p>
           </div>
-          {status === 'draft' && <span className="draft-chip">Draft</span>}
+          {status === 'draft' ? <span className="draft-chip">Draft</span> : null}
         </div>
 
         <div className="dropzone" aria-live="polite">
@@ -219,14 +361,14 @@ function CaptureView({
         </div>
 
         <div className="capture-actions">
-          <label className="file-button primary" htmlFor={cameraInputId}>
+          <label className="file-button primary" htmlFor="capture-camera-input">
             <Camera size={18} /> Take photo
           </label>
-          <label className="file-button" htmlFor={uploadInputId}>
+          <label className="file-button" htmlFor="capture-upload-input">
             <Upload size={18} /> Upload image
           </label>
           <input
-            id={cameraInputId}
+            id="capture-camera-input"
             className="visually-hidden-file"
             accept="image/*"
             capture="environment"
@@ -234,7 +376,7 @@ function CaptureView({
             onChange={(event) => selectImage(event.target.files?.[0] ?? null)}
           />
           <input
-            id={uploadInputId}
+            id="capture-upload-input"
             className="visually-hidden-file"
             accept="image/*"
             type="file"
@@ -242,24 +384,21 @@ function CaptureView({
           />
         </div>
 
-        <div className="action-row">
-          <button className="primary" type="button" disabled={!imageFile || status === 'extracting'} onClick={extract}>
-            <WandSparkles size={18} />
-            {status === 'extracting' ? 'Extracting...' : 'Extract with Gemini'}
-          </button>
-        </div>
+        <button className="ai-button" type="button" disabled={!imageFile || status === 'extracting'} onClick={extract}>
+          <WandSparkles size={18} />
+          {status === 'extracting' ? 'Extracting...' : 'Extract with Gemini'}
+        </button>
 
-        {message && <StatusMessage status={status} message={message} />}
+        {message ? <StatusMessage status={status} message={message} /> : null}
       </section>
 
-      <EntryForm
-        draft={draft}
-        setDraft={setDraft}
+      <ReadingForm
         confidence={confidence}
+        draft={draft}
         issues={issues}
+        mode="capture"
+        setDraft={setDraft}
         title="Verify reading"
-        mode="minimal"
-        profile={profile}
       />
 
       <button className="save-button" type="button" onClick={saveDraft}>
@@ -270,32 +409,29 @@ function CaptureView({
   );
 }
 
-function EntryForm({
-  draft,
-  setDraft,
+function ReadingForm({
   confidence,
+  draft,
   issues,
+  mode,
+  setDraft,
   title,
-  mode = 'full',
-  profile,
 }: {
-  draft: EntryDraft;
-  setDraft: React.Dispatch<React.SetStateAction<EntryDraft>>;
   confidence?: FieldConfidence;
+  draft: EntryDraft;
   issues: ReturnType<typeof validateDraft>;
+  mode: 'capture' | 'edit';
+  setDraft: React.Dispatch<React.SetStateAction<EntryDraft>>;
   title: string;
-  mode?: 'minimal' | 'full';
-  profile?: UserProfile;
 }) {
   const fieldIssues = (field: MeasurementField | 'capturedAt') => issues.filter((issue) => issue.field === field);
-  const shownFields = mode === 'minimal' ? dailyFields : [...dailyFields, ...profileFields];
 
   return (
     <section className="panel">
       <div className="section-heading">
         <div>
           <h2>{title}</h2>
-          <p>{mode === 'minimal' ? 'Confirm FAT% and BMI, add a note if useful.' : 'Suspicious values are highlighted for review, not blocked.'}</p>
+          <p>{mode === 'capture' ? 'Confirm FAT% and BMI. Profile values stay tucked away.' : 'Edit the saved reading.'}</p>
         </div>
       </div>
 
@@ -308,51 +444,21 @@ function EntryForm({
         />
       </label>
 
-      {mode === 'full' && (
-        <div className="unit-toggle" role="group" aria-label="Weight unit">
-          {(['lb', 'kg'] as const).map((unit) => (
-            <button
-              key={unit}
-              type="button"
-              className={draft.weightUnit === unit ? 'active' : ''}
-              onClick={() => setDraft((current) => ({ ...current, weightUnit: unit }))}
-            >
-              {unit}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {mode === 'minimal' && profile && (
-        <p className="profile-note">
-          {profile.weight || profile.bodyAgeYears || profile.skeletalMusclePercent || profile.visceralFatLevel || profile.restingMetabolismKcal
-            ? `Profile applied: ${profile.weight || '-'} ${profile.weightUnit}${profile.bodyAgeYears ? ` · age ${profile.bodyAgeYears}` : ''}`
-            : 'No profile values set'}
-        </p>
-      )}
-
-      <div className="field-grid">
-        {shownFields.map((field) => {
-          const fieldWarnings = fieldIssues(field.key);
-          const isWarn = fieldWarnings.length > 0;
+      <div className="field-grid daily-grid">
+        {dailyFields.map((field) => {
+          const warnings = fieldIssues(field.key);
           return (
-            <label key={field.key} className={`input-field ${isWarn ? 'warn' : ''}`}>
-              <span>
-                {field.label}
-                {confidence?.[field.key] !== undefined && <small>{Math.round((confidence[field.key] ?? 0) * 100)}%</small>}
-              </span>
-              <div className="input-with-suffix">
-                <input
-                  inputMode="decimal"
-                  step={field.step}
-                  type="number"
-                  value={draft[field.key]}
-                  onChange={(event) => setDraft((current) => ({ ...current, [field.key]: event.target.value }))}
-                />
-                {field.key === 'weight' ? <em>{draft.weightUnit}</em> : field.suffix ? <em>{field.suffix}</em> : null}
-              </div>
-              {isWarn && <strong>{fieldWarnings.map((issue) => issue.message).join(' · ')}</strong>}
-            </label>
+            <NumberField
+              key={field.key}
+              confidence={confidence?.[field.key]}
+              field={field.key}
+              label={field.label}
+              step={field.step}
+              suffix={field.suffix}
+              value={draft[field.key]}
+              warnings={warnings.map((issue) => issue.message)}
+              onChange={(value) => setDraft((current) => ({ ...current, [field.key]: value }))}
+            />
           );
         })}
       </div>
@@ -363,80 +469,176 @@ function EntryForm({
           rows={3}
           value={draft.notes}
           onChange={(event) => setDraft((current) => ({ ...current, notes: event.target.value }))}
-          placeholder="Training, hydration, unusual timing..."
+          placeholder="Training, hydration, meal timing, sleep..."
         />
       </label>
 
-      {mode === 'minimal' && (
-        <details className="advanced-entry">
-          <summary>Profile-derived fields</summary>
-          <p>These come from your profile unless you change them for this entry.</p>
-          <div className="field-grid">
-            {profileFields.map((field) => (
-              <label key={field.key} className="input-field">
-                <span>{field.label}</span>
-                <div className="input-with-suffix">
-                  <input
-                    inputMode="decimal"
-                    step={field.step}
-                    type="number"
-                    value={draft[field.key]}
-                    onChange={(event) => setDraft((current) => ({ ...current, [field.key]: event.target.value }))}
-                  />
-                  {field.key === 'weight' ? <em>{draft.weightUnit}</em> : field.suffix ? <em>{field.suffix}</em> : null}
-                </div>
-              </label>
-            ))}
-          </div>
-        </details>
-      )}
+      <details className="advanced-entry">
+        <summary>Profile-derived fields</summary>
+        <p>These are applied automatically from the active profile. Change only when this reading needs an override.</p>
+        <div className="field-grid">
+          <NumberField
+            field="weight"
+            label="Weight"
+            suffix={draft.weightUnit}
+            value={draft.weight}
+            warnings={fieldIssues('weight').map((issue) => issue.message)}
+            onChange={(value) => setDraft((current) => ({ ...current, weight: value }))}
+          />
+          <NumberField
+            field="bodyAgeYears"
+            label="Age"
+            suffix="years"
+            value={draft.bodyAgeYears}
+            warnings={fieldIssues('bodyAgeYears').map((issue) => issue.message)}
+            onChange={(value) => setDraft((current) => ({ ...current, bodyAgeYears: value }))}
+          />
+          <NumberField
+            field="skeletalMusclePercent"
+            label="Skeletal muscle"
+            suffix="%"
+            value={draft.skeletalMusclePercent}
+            warnings={fieldIssues('skeletalMusclePercent').map((issue) => issue.message)}
+            onChange={(value) => setDraft((current) => ({ ...current, skeletalMusclePercent: value }))}
+          />
+          <NumberField
+            field="visceralFatLevel"
+            label="Visceral fat"
+            value={draft.visceralFatLevel}
+            warnings={fieldIssues('visceralFatLevel').map((issue) => issue.message)}
+            onChange={(value) => setDraft((current) => ({ ...current, visceralFatLevel: value }))}
+          />
+        </div>
+      </details>
     </section>
+  );
+}
+
+function DashboardView({ entries, profile }: { entries: RecompEntry[]; profile: UserProfile }) {
+  const latest = entries[0];
+  const previous = entries[1];
+  const chartData = useMemo(() => chartRows(entries), [entries]);
+  const fatDelta = latest && previous ? delta(latest.bodyFatPercent, previous.bodyFatPercent) : null;
+  const bmiDelta = latest && previous ? delta(latest.bmi, previous.bmi) : null;
+
+  if (!entries.length) {
+    return <EmptyState title="No readings for this profile" text="Capture the first FAT% and BMI reading to unlock the dashboard." />;
+  }
+
+  return (
+    <div className="view-stack">
+      <section className="hero-panel dashboard-hero">
+        <div>
+          <span className="eyebrow">Current profile</span>
+          <h2>{profile.name}</h2>
+          <p>Last reading {formatDate(latest.capturedAt)}</p>
+        </div>
+        <Sparkles size={24} />
+      </section>
+
+      <section className="metric-grid">
+        <MetricCard label="Body fat" value={display(latest.bodyFatPercent, '%')} delta={fatDelta} />
+        <MetricCard label="BMI" value={display(latest.bmi)} delta={bmiDelta} />
+        <MetricCard label="Weight" value={`${display(latest.weight)} ${latest.weightUnit}`} />
+      </section>
+
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <h2>Trend line</h2>
+            <p>Profile-scoped readings, oldest to newest.</p>
+          </div>
+        </div>
+        <div className="chart-wrap">
+          <ResponsiveContainer width="100%" height={240}>
+            <ReLineChart data={chartData} margin={{ top: 8, right: 10, left: -20, bottom: 0 }}>
+              <CartesianGrid stroke="#e4e8ec" strokeDasharray="3 3" />
+              <XAxis dataKey="date" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
+              <Tooltip />
+              <Line type="monotone" dataKey="bodyFatPercent" name="Body fat %" stroke="#087f79" strokeWidth={2.8} dot={{ r: 3 }} connectNulls />
+              <Line type="monotone" dataKey="bmi" name="BMI" stroke="#2667c9" strokeWidth={2.4} dot={{ r: 3 }} connectNulls />
+            </ReLineChart>
+          </ResponsiveContainer>
+        </div>
+      </section>
+    </div>
   );
 }
 
 function LogView({
   entries,
-  onSave,
+  profile,
   onDelete,
+  onSave,
 }: {
   entries: RecompEntry[];
-  onSave: (entry: RecompEntry) => void;
+  profile: UserProfile;
   onDelete: (id: string) => void;
+  onSave: (entry: RecompEntry) => void;
 }) {
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [query, setQuery] = useState('');
   const editing = entries.find((entry) => entry.id === editingId);
-  const [draft, setDraft] = useState<EntryDraft>(() => emptyDraft());
+  const [draft, setDraft] = useState<EntryDraft>(() => emptyDraft(profile));
   const issues = validateDraft(draft);
+  const visibleEntries = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    if (!normalized) return entries;
+    return entries.filter((entry) => [entry.notes, entry.profileName, formatDate(entry.capturedAt)].join(' ').toLowerCase().includes(normalized));
+  }, [entries, query]);
 
   useEffect(() => {
     if (editing) setDraft(entryToDraft(editing));
   }, [editing]);
 
   if (!entries.length) {
-    return <EmptyState title="No readings yet" text="Capture or manually add your first Omron reading." />;
+    return <EmptyState title={`No ${profile.name} readings yet`} text="Capture or manually enter the first reading." />;
   }
 
   return (
     <div className="view-stack">
-      {editing && (
-        <div className="edit-block">
-          <EntryForm draft={draft} setDraft={setDraft} issues={issues} title="Edit entry" />
-          <div className="action-row">
-            <button className="primary" type="button" onClick={() => { onSave(draftToEntry(draft, editing)); setEditingId(null); }}>
-              <CheckCircle2 size={18} /> Update
-            </button>
-            <button type="button" onClick={() => setEditingId(null)}>Cancel</button>
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <h2>{profile.name} log</h2>
+            <p>{entries.length} saved readings, newest first.</p>
           </div>
         </div>
-      )}
+        <label className="input-field compact-field">
+          <span>Search notes</span>
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="hydration, evening..." />
+        </label>
+      </section>
+
+      {editing ? (
+        <div className="edit-block">
+          <ReadingForm draft={draft} setDraft={setDraft} issues={issues} title="Edit reading" mode="edit" />
+          <div className="action-row">
+            <button
+              className="primary"
+              type="button"
+              onClick={() => {
+                onSave(draftToEntry(draft, editing));
+                setEditingId(null);
+              }}
+            >
+              <CheckCircle2 size={18} /> Update
+            </button>
+            <button type="button" onClick={() => setEditingId(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       <section className="log-list">
-        {entries.map((entry) => (
+        {visibleEntries.map((entry) => (
           <article className="entry-row" key={entry.id}>
             <button type="button" className="entry-main" onClick={() => setEditingId(entry.id)}>
               <span>{formatDate(entry.capturedAt)}</span>
-              <strong>{display(entry.weight)} {entry.weightUnit}</strong>
-              <small>BF {display(entry.bodyFatPercent)}% · BMI {display(entry.bmi)} · VF {display(entry.visceralFatLevel)}</small>
+              <strong>BF {display(entry.bodyFatPercent, '%')} · BMI {display(entry.bmi)}</strong>
+              <small>{display(entry.weight)} {entry.weightUnit} · {entry.source === 'ai' ? 'AI draft verified' : 'Manual'}{entry.notes ? ` · ${entry.notes}` : ''}</small>
             </button>
             <button className="icon-button danger" type="button" aria-label="Delete entry" onClick={() => onDelete(entry.id)}>
               <Trash2 size={18} />
@@ -448,160 +650,127 @@ function LogView({
   );
 }
 
-function TrendsView({ entries }: { entries: RecompEntry[] }) {
-  const data = useMemo(
-    () =>
-      [...entries]
-        .reverse()
-        .map((entry) => ({
-          date: new Date(entry.capturedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
-          weight: entry.weight,
-          bmi: entry.bmi,
-          bodyFatPercent: entry.bodyFatPercent,
-          skeletalMusclePercent: entry.skeletalMusclePercent,
-          visceralFatLevel: entry.visceralFatLevel,
-        })),
-    [entries],
-  );
-
-  if (entries.length < 2) {
-    return <EmptyState title="Trends need two readings" text="Save a few entries and the charts will appear here." />;
-  }
-
-  return (
-    <div className="view-stack">
-      <TrendCard data={data} dataKey="weight" label="Weight" color="#0b8c83" />
-      <TrendCard data={data} dataKey="bmi" label="BMI" color="#3467c2" />
-      <TrendCard data={data} dataKey="bodyFatPercent" label="Body fat %" color="#dc7a13" />
-      <TrendCard data={data} dataKey="skeletalMusclePercent" label="Skeletal muscle %" color="#5f7f36" />
-      <TrendCard data={data} dataKey="visceralFatLevel" label="Visceral fat" color="#9b4d8d" />
-    </div>
-  );
-}
-
-function TrendCard({ data, dataKey, label, color }: { data: Array<Record<string, string | number | null>>; dataKey: string; label: string; color: string }) {
-  const hasData = data.some((point) => point[dataKey] !== null);
-  if (!hasData) return null;
-  return (
-    <section className="panel trend-card">
-      <h2>{label}</h2>
-      <div className="chart-wrap">
-        <ResponsiveContainer width="100%" height={210}>
-          <ReLineChart data={data} margin={{ top: 10, right: 8, left: -20, bottom: 0 }}>
-            <CartesianGrid stroke="#e4e8ec" strokeDasharray="3 3" />
-            <XAxis dataKey="date" tick={{ fontSize: 11 }} />
-            <YAxis tick={{ fontSize: 11 }} domain={['auto', 'auto']} />
-            <Tooltip />
-            <Legend />
-            <Line type="monotone" dataKey={dataKey} name={label} stroke={color} strokeWidth={2.5} dot={{ r: 3 }} connectNulls />
-          </ReLineChart>
-        </ResponsiveContainer>
-      </div>
-    </section>
-  );
-}
-
-function BackupView({
+function ProfilesView({
+  activeProfileId,
   entries,
-  profile,
-  accessKey,
-  onAccessKeyChange,
-  onImport,
+  profiles,
+  onAddProfile,
+  onDeleteProfile,
   onProfileChange,
+  onProfileSave,
 }: {
+  activeProfileId: string;
   entries: RecompEntry[];
-  profile: UserProfile;
-  accessKey: string;
-  onAccessKeyChange: (value: string) => void;
-  onImport: (entries: RecompEntry[]) => void;
-  onProfileChange: (profile: UserProfile) => void;
+  profiles: UserProfile[];
+  onAddProfile: () => void;
+  onDeleteProfile: (profileId: string) => void;
+  onProfileChange: (profileId: string) => void;
+  onProfileSave: (profile: UserProfile) => void;
 }) {
-  const [message, setMessage] = useState('');
+  const [editingId, setEditingId] = useState(activeProfileId);
+  const editingProfile = profiles.find((profile) => profile.id === editingId) ?? profiles[0];
 
-  const importFile = async (file: File | null) => {
-    if (!file) return;
-    try {
-      const imported = parseBackup(await file.text());
-      const merged = sortEntries([...imported, ...entries.filter((entry) => !imported.some((item) => item.id === entry.id))]);
-      onImport(merged);
-      setMessage(`Imported ${imported.length} valid entries.`);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : 'Import failed');
-    }
-  };
+  useEffect(() => setEditingId(activeProfileId), [activeProfileId]);
 
   return (
     <div className="view-stack">
       <section className="panel">
         <div className="section-heading">
           <div>
-            <h2>Profile</h2>
-            <p>Stable values used automatically for each new reading.</p>
+            <h2>Profiles</h2>
+            <p>Switch people before logging. Each dashboard and log is profile-scoped.</p>
           </div>
-          <UserRound size={22} className="section-icon" />
+          <button className="icon-button" type="button" aria-label="Add profile" onClick={onAddProfile}>
+            <CirclePlus size={20} />
+          </button>
         </div>
 
-        <ProfileForm profile={profile} onChange={onProfileChange} />
+        <div className="profile-list">
+          {profiles.map((profile) => {
+            const count = entriesForProfile(entries, profile.id, profiles.length).length;
+            return (
+              <button
+                key={profile.id}
+                type="button"
+                className={`profile-card ${profile.id === activeProfileId ? 'active' : ''}`}
+                onClick={() => {
+                  onProfileChange(profile.id);
+                  setEditingId(profile.id);
+                }}
+              >
+                <span>{initials(profile.name)}</span>
+                <strong>{profile.name}</strong>
+                <small>{count} readings · {profileSummary(profile)}</small>
+              </button>
+            );
+          })}
+        </div>
       </section>
 
       <section className="panel">
         <div className="section-heading">
           <div>
-            <h2>Backup</h2>
-            <p>Your data stays in this browser unless you export it.</p>
+            <h2>Edit profile</h2>
+            <p>Stable values are automatically applied to future readings.</p>
           </div>
         </div>
-        <div className="settings-actions">
-          <button type="button" onClick={() => downloadFile('recomptrack-backup.json', exportJson(entries), 'application/json')}>
-            <Download size={18} /> Export JSON
-          </button>
-          <button type="button" onClick={() => downloadFile('recomptrack-log.csv', exportCsv(entries), 'text/csv')}>
-            <BarChart3 size={18} /> Export CSV
-          </button>
-          <label className="file-button">
-            <FileUp size={18} /> Import JSON
-            <input type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0] ?? null)} />
-          </label>
-        </div>
-        {message && <p className="muted-note">{message}</p>}
-      </section>
-
-      <section className="panel quiet">
-        <h2>Gemini proxy</h2>
-        <p>Set <code>GEMINI_API_KEY</code> as a server secret. If you set <code>APP_ACCESS_KEY</code>, store the same key here to send <code>x-app-access-key</code>.</p>
-        <label className="input-field access-key-field">
-          <span>App access key</span>
-          <input
-            type="password"
-            value={accessKey}
-            onChange={(event) => onAccessKeyChange(event.target.value)}
-            placeholder="Optional"
-          />
-        </label>
+        <ProfileForm
+          profile={editingProfile}
+          onDelete={() => onDeleteProfile(editingProfile.id)}
+          onSave={(profile) => {
+            onProfileSave(profile);
+            setEditingId(profile.id);
+          }}
+          canDelete={profiles.length > 1}
+        />
       </section>
     </div>
   );
 }
 
 function ProfileForm({
+  canDelete,
+  onDelete,
+  onSave,
   profile,
-  onChange,
 }: {
+  canDelete: boolean;
+  onDelete: () => void;
+  onSave: (profile: UserProfile) => void;
   profile: UserProfile;
-  onChange: (profile: UserProfile) => void;
 }) {
-  const update = (patch: Partial<UserProfile>) => onChange({ ...profile, ...patch });
+  const [draft, setDraft] = useState(profile);
+
+  useEffect(() => setDraft(profile), [profile]);
+
+  const update = (patch: Partial<UserProfile>) => setDraft((current) => ({ ...current, ...patch }));
 
   return (
-    <>
-      <div className="unit-toggle" role="group" aria-label="Profile weight unit">
+    <div className="profile-form">
+      <label className="input-field">
+        <span>Name</span>
+        <input value={draft.name} onChange={(event) => update({ name: event.target.value })} />
+      </label>
+
+      <div className="segmented compact-segmented" role="group" aria-label="Sex">
+        {(['unspecified', 'female', 'male', 'other'] as ProfileSex[]).map((sex) => (
+          <button key={sex} type="button" className={draft.sex === sex ? 'active' : ''} onClick={() => update({ sex })}>
+            {sex === 'unspecified' ? 'Skip' : sex}
+          </button>
+        ))}
+      </div>
+
+      <div className="segmented" role="group" aria-label="Weight unit">
         {(['lb', 'kg'] as const).map((unit) => (
-          <button
-            key={unit}
-            type="button"
-            className={profile.weightUnit === unit ? 'active' : ''}
-            onClick={() => update({ weightUnit: unit })}
-          >
+          <button key={unit} type="button" className={draft.weightUnit === unit ? 'active' : ''} onClick={() => update({ weightUnit: unit })}>
+            {unit}
+          </button>
+        ))}
+      </div>
+
+      <div className="segmented" role="group" aria-label="Height unit">
+        {(['in', 'cm'] as const).map((unit) => (
+          <button key={unit} type="button" className={draft.heightUnit === unit ? 'active' : ''} onClick={() => update({ heightUnit: unit })}>
             {unit}
           </button>
         ))}
@@ -616,19 +785,149 @@ function ProfileForm({
                 inputMode="decimal"
                 step={field.step}
                 type="number"
-                value={profile[field.key]}
+                value={draft[field.key]}
                 onChange={(event) => update({ [field.key]: event.target.value })}
               />
-              {field.key === 'weight' ? <em>{profile.weightUnit}</em> : field.suffix ? <em>{field.suffix}</em> : null}
+              {profileSuffix(field.key, draft, field.suffix) ? <em>{profileSuffix(field.key, draft, field.suffix)}</em> : null}
             </div>
           </label>
         ))}
       </div>
 
-      <button className="secondary-action" type="button" onClick={() => onChange(emptyProfile())}>
-        Clear profile
-      </button>
-    </>
+      <label className="input-field">
+        <span>Baseline notes</span>
+        <textarea rows={3} value={draft.baselineNotes} onChange={(event) => update({ baselineNotes: event.target.value })} />
+      </label>
+
+      <div className="action-row">
+        <button className="primary" type="button" onClick={() => onSave({ ...draft, name: draft.name.trim() || 'Unnamed profile' })}>
+          <Save size={18} /> Save profile
+        </button>
+        <button className="danger subtle" type="button" disabled={!canDelete} onClick={onDelete}>
+          <Trash2 size={18} /> Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SettingsView({
+  accessKey,
+  entries,
+  profiles,
+  onAccessKeyChange,
+  onImport,
+}: {
+  accessKey: string;
+  entries: RecompEntry[];
+  profiles: UserProfile[];
+  onAccessKeyChange: (value: string) => void;
+  onImport: (entries: RecompEntry[], profiles: UserProfile[]) => void;
+}) {
+  const [message, setMessage] = useState('');
+
+  const importFile = async (file: File | null) => {
+    if (!file) return;
+    try {
+      const imported = parseBackup(await file.text());
+      onImport(imported.entries, imported.profiles);
+      setMessage(`Imported ${imported.entries.length} entries${imported.profiles.length ? ` and ${imported.profiles.length} profiles` : ''}.`);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Import failed');
+    }
+  };
+
+  return (
+    <div className="view-stack">
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <h2>Backup</h2>
+            <p>{entries.length} readings and {profiles.length} profiles stay in this browser.</p>
+          </div>
+        </div>
+        <div className="settings-actions">
+          <button type="button" onClick={() => downloadFile('recomptrack-backup.json', exportJson(entries, profiles), 'application/json')}>
+            <Download size={18} /> Export JSON
+          </button>
+          <button type="button" onClick={() => downloadFile('recomptrack-log.csv', exportCsv(entries), 'text/csv')}>
+            <BarChart3 size={18} /> Export CSV
+          </button>
+          <label className="file-button">
+            <FileUp size={18} /> Import JSON
+            <input type="file" accept="application/json,.json" onChange={(event) => importFile(event.target.files?.[0] ?? null)} />
+          </label>
+        </div>
+        {message ? <p className="muted-note">{message}</p> : null}
+      </section>
+
+      <section className="panel quiet">
+        <h2>Gemini proxy</h2>
+        <p>Store an optional app access key here only if your Worker uses <code>APP_ACCESS_KEY</code>.</p>
+        <label className="input-field access-key-field">
+          <span>App access key</span>
+          <input
+            type="password"
+            value={accessKey}
+            onChange={(event) => onAccessKeyChange(event.target.value)}
+            placeholder="Optional"
+          />
+        </label>
+      </section>
+
+      <section className="panel quiet">
+        <h2>Local-first privacy</h2>
+        <p>Profiles, logs, and notes are saved in this browser. Photos are used for extraction and are not stored.</p>
+      </section>
+    </div>
+  );
+}
+
+function NumberField({
+  confidence,
+  field,
+  label,
+  onChange,
+  step = '0.1',
+  suffix,
+  value,
+  warnings,
+}: {
+  confidence?: number;
+  field: MeasurementField;
+  label: string;
+  onChange: (value: string) => void;
+  step?: string;
+  suffix?: string;
+  value: string;
+  warnings: string[];
+}) {
+  return (
+    <label className={`input-field ${warnings.length ? 'warn' : ''}`}>
+      <span>
+        {label}
+        {confidence !== undefined ? <small>{Math.round(confidence * 100)}%</small> : null}
+      </span>
+      <div className="input-with-suffix">
+        <input inputMode="decimal" step={step} type="number" value={value} onChange={(event) => onChange(event.target.value)} />
+        {suffix ? <em>{suffix}</em> : null}
+      </div>
+      {warnings.length ? <strong>{warnings.join(' · ')}</strong> : null}
+    </label>
+  );
+}
+
+function MetricCard({ delta: deltaValue, label, value }: { delta?: number | null; label: string; value: string }) {
+  return (
+    <article className="metric-card">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {deltaValue !== undefined && deltaValue !== null ? (
+        <small className={deltaValue <= 0 ? 'good' : 'watch'}>{deltaValue > 0 ? '+' : ''}{deltaValue.toFixed(1)} since last</small>
+      ) : (
+        <small>Waiting for comparison</small>
+      )}
+    </article>
   );
 }
 
@@ -646,6 +945,45 @@ function EmptyState({ title, text }: { title: string; text: string }) {
   );
 }
 
+const entriesForProfile = (entries: RecompEntry[], profileId: string | null | undefined, profileCount: number) =>
+  entries.filter((entry) => entry.profileId === profileId || (!entry.profileId && profileCount === 1));
+
+const mergeEntries = (current: RecompEntry[], imported: RecompEntry[]) =>
+  sortEntries([...imported, ...current.filter((entry) => !imported.some((item) => item.id === entry.id))]);
+
+const mergeProfiles = (current: UserProfile[], imported: UserProfile[]) => [
+  ...imported,
+  ...current.filter((profile) => !imported.some((item) => item.id === profile.id)),
+];
+
+const chartRows = (entries: RecompEntry[]) =>
+  [...entries].reverse().map((entry) => ({
+    date: new Date(entry.capturedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
+    bodyFatPercent: entry.bodyFatPercent,
+    bmi: entry.bmi,
+    weight: entry.weight,
+  }));
+
+const profileSummary = (profile: UserProfile) => {
+  const parts = [
+    profile.weight ? `${profile.weight} ${profile.weightUnit}` : '',
+    profile.ageYears ? `${profile.ageYears} years` : '',
+    profile.height ? `${profile.height} ${profile.heightUnit}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' · ') : 'Profile values not set';
+};
+
+const profileSuffix = (field: ProfileField, profile: UserProfile, fallback?: string) => {
+  if (field === 'weight') return profile.weightUnit;
+  if (field === 'height') return profile.heightUnit;
+  return fallback;
+};
+
+const delta = (current: number | null, previous: number | null) => {
+  if (current === null || previous === null) return null;
+  return current - previous;
+};
+
 const valueToInput = (value: number | string | null | undefined) =>
   value === null || value === undefined ? '' : String(value);
 
@@ -659,7 +997,15 @@ const readableError = async (response: Response) => {
   }
 };
 
-const display = (value: number | null) => (value === null ? '-' : value);
+const display = (value: number | null, suffix = '') => (value === null ? '-' : `${value}${suffix}`);
+
+const initials = (name: string) =>
+  name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join('') || 'P';
 
 const formatDate = (iso: string) =>
   new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });

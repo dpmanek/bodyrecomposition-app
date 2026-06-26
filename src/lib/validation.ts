@@ -1,11 +1,11 @@
 import type {
   EntryDraft,
+  FieldConfidence,
   MeasurementField,
   RecompEntry,
   UserProfile,
   ValidationIssue,
   WeightUnit,
-  FieldConfidence,
 } from '../types';
 
 type Range = { min: number; max: number; label: string };
@@ -17,28 +17,37 @@ export const FIELD_RANGES: Record<MeasurementField, Range> = {
   skeletalMusclePercent: { min: 1, max: 75, label: 'Skeletal muscle is outside the expected 1-75% range' },
   visceralFatLevel: { min: 1, max: 30, label: 'Visceral fat is outside the expected 1-30 range' },
   restingMetabolismKcal: { min: 500, max: 5000, label: 'Resting metabolism is outside the expected 500-5000 kcal range' },
-  bodyAgeYears: { min: 1, max: 120, label: 'Body age is outside the expected 1-120 range' },
+  bodyAgeYears: { min: 1, max: 120, label: 'Age is outside the expected 1-120 range' },
 };
 
-export const emptyProfile = (): UserProfile => ({
-  weight: '',
-  weightUnit: 'lb',
-  bodyAgeYears: '',
-  skeletalMusclePercent: '',
-  visceralFatLevel: '',
-  restingMetabolismKcal: '',
-});
+export const createProfile = (name = 'Me'): UserProfile => {
+  const now = new Date().toISOString();
 
-export const emptyDraft = (profile: UserProfile = emptyProfile()): EntryDraft => ({
+  return {
+    id: crypto.randomUUID(),
+    name,
+    sex: 'unspecified',
+    ageYears: '',
+    height: '',
+    heightUnit: 'in',
+    weight: '',
+    weightUnit: 'lb',
+    skeletalMusclePercent: '',
+    visceralFatLevel: '',
+    restingMetabolismKcal: '',
+    baselineNotes: '',
+    createdAt: now,
+    updatedAt: now,
+  };
+};
+
+export const emptyDraft = (profile: UserProfile): EntryDraft => ({
+  profileId: profile.id,
+  profileName: profile.name,
   capturedAt: new Date().toISOString().slice(0, 16),
-  weight: profile.weight,
-  weightUnit: profile.weightUnit,
+  ...profileToDraftPatch(profile),
   bmi: '',
   bodyFatPercent: '',
-  skeletalMusclePercent: profile.skeletalMusclePercent,
-  visceralFatLevel: profile.visceralFatLevel,
-  restingMetabolismKcal: profile.restingMetabolismKcal,
-  bodyAgeYears: profile.bodyAgeYears,
   notes: '',
   source: 'manual',
 });
@@ -49,10 +58,12 @@ export const profileToDraftPatch = (profile: UserProfile) => ({
   skeletalMusclePercent: profile.skeletalMusclePercent,
   visceralFatLevel: profile.visceralFatLevel,
   restingMetabolismKcal: profile.restingMetabolismKcal,
-  bodyAgeYears: profile.bodyAgeYears,
+  bodyAgeYears: profile.ageYears,
 });
 
 export const entryToDraft = (entry: RecompEntry): EntryDraft => ({
+  profileId: entry.profileId,
+  profileName: entry.profileName,
   capturedAt: entry.capturedAt.slice(0, 16),
   weight: stringifyNumber(entry.weight),
   weightUnit: entry.weightUnit,
@@ -71,6 +82,8 @@ export const draftToEntry = (draft: EntryDraft, existing?: RecompEntry): RecompE
 
   return {
     id: existing?.id ?? crypto.randomUUID(),
+    profileId: draft.profileId,
+    profileName: draft.profileName || 'Unknown profile',
     capturedAt: new Date(draft.capturedAt).toISOString(),
     weight: parseOptionalNumber(draft.weight),
     weightUnit: draft.weightUnit,
@@ -125,6 +138,8 @@ export const validateImportedEntry = (value: unknown): RecompEntry | null => {
 
   const draft = entryToDraft({
     id: String(candidate.id),
+    profileId: candidate.profileId ? String(candidate.profileId) : null,
+    profileName: String(candidate.profileName ?? 'Imported'),
     capturedAt: String(candidate.capturedAt),
     weight: normalizeNullableNumber(candidate.weight),
     weightUnit: candidate.weightUnit as WeightUnit,
@@ -146,6 +161,8 @@ export const validateImportedEntry = (value: unknown): RecompEntry | null => {
 
   return draftToEntry(draft, {
     id: String(candidate.id),
+    profileId: candidate.profileId ? String(candidate.profileId) : null,
+    profileName: String(candidate.profileName ?? 'Imported'),
     capturedAt: String(candidate.capturedAt),
     weight: null,
     weightUnit: candidate.weightUnit as WeightUnit,
@@ -162,6 +179,33 @@ export const validateImportedEntry = (value: unknown): RecompEntry | null => {
   });
 };
 
+export const validateImportedProfile = (value: unknown): UserProfile | null => {
+  if (!value || typeof value !== 'object') return null;
+  const candidate = value as Partial<UserProfile>;
+  const fallback = createProfile(String(candidate.name ?? 'Imported'));
+
+  return {
+    ...fallback,
+    id: candidate.id ? String(candidate.id) : fallback.id,
+    name: String(candidate.name ?? fallback.name).trim() || fallback.name,
+    sex:
+      candidate.sex === 'female' || candidate.sex === 'male' || candidate.sex === 'other'
+        ? candidate.sex
+        : 'unspecified',
+    ageYears: stringifyUnknown(candidate.ageYears),
+    height: stringifyUnknown(candidate.height),
+    heightUnit: candidate.heightUnit === 'cm' ? 'cm' : 'in',
+    weight: stringifyUnknown(candidate.weight),
+    weightUnit: candidate.weightUnit === 'kg' ? 'kg' : 'lb',
+    skeletalMusclePercent: stringifyUnknown(candidate.skeletalMusclePercent),
+    visceralFatLevel: stringifyUnknown(candidate.visceralFatLevel),
+    restingMetabolismKcal: stringifyUnknown(candidate.restingMetabolismKcal),
+    baselineNotes: String(candidate.baselineNotes ?? ''),
+    createdAt: String(candidate.createdAt ?? fallback.createdAt),
+    updatedAt: String(candidate.updatedAt ?? fallback.updatedAt),
+  };
+};
+
 export const parseOptionalNumber = (value: string): number | null => {
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -175,4 +219,9 @@ const normalizeNullableNumber = (value: unknown): number | null => {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+};
+
+const stringifyUnknown = (value: unknown) => {
+  if (value === null || value === undefined) return '';
+  return String(value);
 };
