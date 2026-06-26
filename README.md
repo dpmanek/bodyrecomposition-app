@@ -58,6 +58,12 @@ Cloudflare Pages works well for free or near-free hosting:
 
 The repo also includes `wrangler.jsonc` and `src/worker.ts` for Cloudflare Workers static-asset hosting on a `workers.dev` URL. Use `npm run build` and `wrangler deploy` for that path.
 
+For Cloudflare Workers Git deployments, set the deploy command to:
+
+```bash
+npm run deploy
+```
+
 ## Data Model
 
 Each saved entry contains:
