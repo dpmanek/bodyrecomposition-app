@@ -13,6 +13,7 @@ import {
   Settings,
   Trash2,
   Upload,
+  UserRound,
   WandSparkles,
 } from 'lucide-react';
 import {
@@ -25,21 +26,25 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import type { AppTab, EntryDraft, ExtractionResult, FieldConfidence, MeasurementField, RecompEntry } from './types';
+import type { AppTab, EntryDraft, ExtractionResult, FieldConfidence, MeasurementField, RecompEntry, UserProfile } from './types';
 import { downloadFile, exportCsv, exportJson, parseBackup } from './lib/export';
 import { prepareImageForExtraction } from './lib/image';
+import { loadProfile, saveProfile } from './lib/profile';
 import { loadEntries, saveEntries, sortEntries } from './lib/storage';
-import { draftToEntry, emptyDraft, entryToDraft, validateDraft } from './lib/validation';
+import { draftToEntry, emptyDraft, emptyProfile, entryToDraft, profileToDraftPatch, validateDraft } from './lib/validation';
 import './styles.css';
 
-const fields: Array<{ key: MeasurementField; label: string; suffix?: string; step?: string }> = [
-  { key: 'weight', label: 'Weight', step: '0.1' },
-  { key: 'bmi', label: 'BMI', step: '0.1' },
+const dailyFields: Array<{ key: MeasurementField; label: string; suffix?: string; step?: string }> = [
   { key: 'bodyFatPercent', label: 'Body fat', suffix: '%', step: '0.1' },
+  { key: 'bmi', label: 'BMI', step: '0.1' },
+];
+
+const profileFields: Array<{ key: keyof Omit<UserProfile, 'weightUnit'>; label: string; suffix?: string; step?: string }> = [
+  { key: 'weight', label: 'Weight', step: '0.1' },
   { key: 'skeletalMusclePercent', label: 'Skeletal muscle', suffix: '%', step: '0.1' },
   { key: 'visceralFatLevel', label: 'Visceral fat', step: '1' },
   { key: 'restingMetabolismKcal', label: 'Resting metabolism', suffix: 'kcal', step: '1' },
-  { key: 'bodyAgeYears', label: 'Body age', suffix: 'years', step: '1' },
+  { key: 'bodyAgeYears', label: 'Age', suffix: 'years', step: '1' },
 ];
 
 const tabs: Array<{ id: AppTab; label: string; icon: React.ReactNode }> = [
@@ -52,9 +57,11 @@ const tabs: Array<{ id: AppTab; label: string; icon: React.ReactNode }> = [
 function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('capture');
   const [entries, setEntries] = useState<RecompEntry[]>(() => loadEntries());
+  const [profile, setProfile] = useState<UserProfile>(() => loadProfile());
   const [accessKey, setAccessKey] = useState(() => localStorage.getItem('recomptrack.accessKey.v1') ?? '');
 
   useEffect(() => saveEntries(entries), [entries]);
+  useEffect(() => saveProfile(profile), [profile]);
   useEffect(() => {
     if (accessKey.trim()) {
       localStorage.setItem('recomptrack.accessKey.v1', accessKey.trim());
@@ -86,10 +93,19 @@ function App() {
       </header>
 
       <section className="content">
-        {activeTab === 'capture' && <CaptureView accessKey={accessKey} onSave={upsertEntry} />}
+        {activeTab === 'capture' && <CaptureView accessKey={accessKey} profile={profile} onSave={upsertEntry} />}
         {activeTab === 'log' && <LogView entries={entries} onSave={upsertEntry} onDelete={deleteEntry} />}
         {activeTab === 'trends' && <TrendsView entries={entries} />}
-        {activeTab === 'backup' && <BackupView entries={entries} accessKey={accessKey} onAccessKeyChange={setAccessKey} onImport={setEntries} />}
+        {activeTab === 'backup' && (
+          <BackupView
+            entries={entries}
+            profile={profile}
+            accessKey={accessKey}
+            onAccessKeyChange={setAccessKey}
+            onImport={setEntries}
+            onProfileChange={setProfile}
+          />
+        )}
       </section>
 
       <nav className="tabs" aria-label="Primary navigation">
@@ -109,10 +125,18 @@ function App() {
   );
 }
 
-function CaptureView({ accessKey, onSave }: { accessKey: string; onSave: (entry: RecompEntry) => void }) {
+function CaptureView({
+  accessKey,
+  profile,
+  onSave,
+}: {
+  accessKey: string;
+  profile: UserProfile;
+  onSave: (entry: RecompEntry) => void;
+}) {
   const cameraInputId = 'capture-camera-input';
   const uploadInputId = 'capture-upload-input';
-  const [draft, setDraft] = useState<EntryDraft>(() => emptyDraft());
+  const [draft, setDraft] = useState<EntryDraft>(() => emptyDraft(profile));
   const [confidence, setConfidence] = useState<FieldConfidence>({});
   const [preview, setPreview] = useState<string | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -148,14 +172,15 @@ function CaptureView({ accessKey, onSave }: { accessKey: string; onSave: (entry:
       setDraft((current) => ({
         ...current,
         source: 'ai',
-        weight: valueToInput(result.values.weight),
-        weightUnit: result.values.weightUnit === 'kg' ? 'kg' : result.values.weightUnit === 'lb' ? 'lb' : current.weightUnit,
+        ...profileToDraftPatch(profile),
+        weight: valueToInput(result.values.weight) || profile.weight,
+        weightUnit: result.values.weightUnit === 'kg' ? 'kg' : result.values.weightUnit === 'lb' ? 'lb' : profile.weightUnit,
         bmi: valueToInput(result.values.bmi),
         bodyFatPercent: valueToInput(result.values.bodyFatPercent),
-        skeletalMusclePercent: valueToInput(result.values.skeletalMusclePercent),
-        visceralFatLevel: valueToInput(result.values.visceralFatLevel),
-        restingMetabolismKcal: valueToInput(result.values.restingMetabolismKcal),
-        bodyAgeYears: valueToInput(result.values.bodyAgeYears),
+        skeletalMusclePercent: valueToInput(result.values.skeletalMusclePercent) || profile.skeletalMusclePercent,
+        visceralFatLevel: valueToInput(result.values.visceralFatLevel) || profile.visceralFatLevel,
+        restingMetabolismKcal: valueToInput(result.values.restingMetabolismKcal) || profile.restingMetabolismKcal,
+        bodyAgeYears: valueToInput(result.values.bodyAgeYears) || profile.bodyAgeYears,
       }));
       setConfidence(result.confidence ?? {});
       setStatus('draft');
@@ -169,7 +194,7 @@ function CaptureView({ accessKey, onSave }: { accessKey: string; onSave: (entry:
   const saveDraft = () => {
     const entry = draftToEntry(draft);
     onSave(entry);
-    setDraft(emptyDraft());
+    setDraft(emptyDraft(profile));
     setConfidence({});
     setImageFile(null);
     setPreview(null);
@@ -227,7 +252,15 @@ function CaptureView({ accessKey, onSave }: { accessKey: string; onSave: (entry:
         {message && <StatusMessage status={status} message={message} />}
       </section>
 
-      <EntryForm draft={draft} setDraft={setDraft} confidence={confidence} issues={issues} title="Verify draft" />
+      <EntryForm
+        draft={draft}
+        setDraft={setDraft}
+        confidence={confidence}
+        issues={issues}
+        title="Verify reading"
+        mode="minimal"
+        profile={profile}
+      />
 
       <button className="save-button" type="button" onClick={saveDraft}>
         <Save size={19} />
@@ -243,21 +276,26 @@ function EntryForm({
   confidence,
   issues,
   title,
+  mode = 'full',
+  profile,
 }: {
   draft: EntryDraft;
   setDraft: React.Dispatch<React.SetStateAction<EntryDraft>>;
   confidence?: FieldConfidence;
   issues: ReturnType<typeof validateDraft>;
   title: string;
+  mode?: 'minimal' | 'full';
+  profile?: UserProfile;
 }) {
   const fieldIssues = (field: MeasurementField | 'capturedAt') => issues.filter((issue) => issue.field === field);
+  const shownFields = mode === 'minimal' ? dailyFields : [...dailyFields, ...profileFields];
 
   return (
     <section className="panel">
       <div className="section-heading">
         <div>
           <h2>{title}</h2>
-          <p>Suspicious values are highlighted for review, not blocked.</p>
+          <p>{mode === 'minimal' ? 'Confirm FAT% and BMI, add a note if useful.' : 'Suspicious values are highlighted for review, not blocked.'}</p>
         </div>
       </div>
 
@@ -270,21 +308,31 @@ function EntryForm({
         />
       </label>
 
-      <div className="unit-toggle" role="group" aria-label="Weight unit">
-        {(['lb', 'kg'] as const).map((unit) => (
-          <button
-            key={unit}
-            type="button"
-            className={draft.weightUnit === unit ? 'active' : ''}
-            onClick={() => setDraft((current) => ({ ...current, weightUnit: unit }))}
-          >
-            {unit}
-          </button>
-        ))}
-      </div>
+      {mode === 'full' && (
+        <div className="unit-toggle" role="group" aria-label="Weight unit">
+          {(['lb', 'kg'] as const).map((unit) => (
+            <button
+              key={unit}
+              type="button"
+              className={draft.weightUnit === unit ? 'active' : ''}
+              onClick={() => setDraft((current) => ({ ...current, weightUnit: unit }))}
+            >
+              {unit}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {mode === 'minimal' && profile && (
+        <p className="profile-note">
+          {profile.weight || profile.bodyAgeYears || profile.skeletalMusclePercent || profile.visceralFatLevel || profile.restingMetabolismKcal
+            ? `Profile applied: ${profile.weight || '-'} ${profile.weightUnit}${profile.bodyAgeYears ? ` · age ${profile.bodyAgeYears}` : ''}`
+            : 'No profile values set'}
+        </p>
+      )}
 
       <div className="field-grid">
-        {fields.map((field) => {
+        {shownFields.map((field) => {
           const fieldWarnings = fieldIssues(field.key);
           const isWarn = fieldWarnings.length > 0;
           return (
@@ -318,6 +366,30 @@ function EntryForm({
           placeholder="Training, hydration, unusual timing..."
         />
       </label>
+
+      {mode === 'minimal' && (
+        <details className="advanced-entry">
+          <summary>Profile-derived fields</summary>
+          <p>These come from your profile unless you change them for this entry.</p>
+          <div className="field-grid">
+            {profileFields.map((field) => (
+              <label key={field.key} className="input-field">
+                <span>{field.label}</span>
+                <div className="input-with-suffix">
+                  <input
+                    inputMode="decimal"
+                    step={field.step}
+                    type="number"
+                    value={draft[field.key]}
+                    onChange={(event) => setDraft((current) => ({ ...current, [field.key]: event.target.value }))}
+                  />
+                  {field.key === 'weight' ? <em>{draft.weightUnit}</em> : field.suffix ? <em>{field.suffix}</em> : null}
+                </div>
+              </label>
+            ))}
+          </div>
+        </details>
+      )}
     </section>
   );
 }
@@ -431,14 +503,18 @@ function TrendCard({ data, dataKey, label, color }: { data: Array<Record<string,
 
 function BackupView({
   entries,
+  profile,
   accessKey,
   onAccessKeyChange,
   onImport,
+  onProfileChange,
 }: {
   entries: RecompEntry[];
+  profile: UserProfile;
   accessKey: string;
   onAccessKeyChange: (value: string) => void;
   onImport: (entries: RecompEntry[]) => void;
+  onProfileChange: (profile: UserProfile) => void;
 }) {
   const [message, setMessage] = useState('');
 
@@ -456,6 +532,18 @@ function BackupView({
 
   return (
     <div className="view-stack">
+      <section className="panel">
+        <div className="section-heading">
+          <div>
+            <h2>Profile</h2>
+            <p>Stable values used automatically for each new reading.</p>
+          </div>
+          <UserRound size={22} className="section-icon" />
+        </div>
+
+        <ProfileForm profile={profile} onChange={onProfileChange} />
+      </section>
+
       <section className="panel">
         <div className="section-heading">
           <div>
@@ -492,6 +580,55 @@ function BackupView({
         </label>
       </section>
     </div>
+  );
+}
+
+function ProfileForm({
+  profile,
+  onChange,
+}: {
+  profile: UserProfile;
+  onChange: (profile: UserProfile) => void;
+}) {
+  const update = (patch: Partial<UserProfile>) => onChange({ ...profile, ...patch });
+
+  return (
+    <>
+      <div className="unit-toggle" role="group" aria-label="Profile weight unit">
+        {(['lb', 'kg'] as const).map((unit) => (
+          <button
+            key={unit}
+            type="button"
+            className={profile.weightUnit === unit ? 'active' : ''}
+            onClick={() => update({ weightUnit: unit })}
+          >
+            {unit}
+          </button>
+        ))}
+      </div>
+
+      <div className="field-grid">
+        {profileFields.map((field) => (
+          <label key={field.key} className="input-field">
+            <span>{field.label}</span>
+            <div className="input-with-suffix">
+              <input
+                inputMode="decimal"
+                step={field.step}
+                type="number"
+                value={profile[field.key]}
+                onChange={(event) => update({ [field.key]: event.target.value })}
+              />
+              {field.key === 'weight' ? <em>{profile.weightUnit}</em> : field.suffix ? <em>{field.suffix}</em> : null}
+            </div>
+          </label>
+        ))}
+      </div>
+
+      <button className="secondary-action" type="button" onClick={() => onChange(emptyProfile())}>
+        Clear profile
+      </button>
+    </>
   );
 }
 

@@ -123,6 +123,11 @@ button:disabled {
   margin-bottom: 14px;
 }
 
+.section-icon {
+  color: var(--accent);
+  flex: 0 0 auto;
+}
+
 h2 {
   margin: 0;
   font-size: 1.05rem;
@@ -289,6 +294,33 @@ h2 {
   gap: 2px;
 }
 
+.profile-note {
+  margin: -2px 0 12px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 700;
+}
+
+.advanced-entry {
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.advanced-entry summary {
+  color: var(--accent-strong);
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 800;
+}
+
+.advanced-entry p {
+  margin: 7px 0 12px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.4;
+}
+
 .unit-toggle {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -354,6 +386,11 @@ h2 {
 .settings-actions {
   display: grid;
   gap: 10px;
+}
+
+.secondary-action {
+  width: 100%;
+  margin-top: 2px;
 }
 
 .file-button {

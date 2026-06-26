@@ -2,6 +2,7 @@ import type {
   EntryDraft,
   MeasurementField,
   RecompEntry,
+  UserProfile,
   ValidationIssue,
   WeightUnit,
   FieldConfidence,
@@ -19,18 +20,36 @@ export const FIELD_RANGES: Record<MeasurementField, Range> = {
   bodyAgeYears: { min: 1, max: 120, label: 'Body age is outside the expected 1-120 range' },
 };
 
-export const emptyDraft = (): EntryDraft => ({
-  capturedAt: new Date().toISOString().slice(0, 16),
+export const emptyProfile = (): UserProfile => ({
   weight: '',
   weightUnit: 'lb',
-  bmi: '',
-  bodyFatPercent: '',
+  bodyAgeYears: '',
   skeletalMusclePercent: '',
   visceralFatLevel: '',
   restingMetabolismKcal: '',
-  bodyAgeYears: '',
+});
+
+export const emptyDraft = (profile: UserProfile = emptyProfile()): EntryDraft => ({
+  capturedAt: new Date().toISOString().slice(0, 16),
+  weight: profile.weight,
+  weightUnit: profile.weightUnit,
+  bmi: '',
+  bodyFatPercent: '',
+  skeletalMusclePercent: profile.skeletalMusclePercent,
+  visceralFatLevel: profile.visceralFatLevel,
+  restingMetabolismKcal: profile.restingMetabolismKcal,
+  bodyAgeYears: profile.bodyAgeYears,
   notes: '',
   source: 'manual',
+});
+
+export const profileToDraftPatch = (profile: UserProfile) => ({
+  weight: profile.weight,
+  weightUnit: profile.weightUnit,
+  skeletalMusclePercent: profile.skeletalMusclePercent,
+  visceralFatLevel: profile.visceralFatLevel,
+  restingMetabolismKcal: profile.restingMetabolismKcal,
+  bodyAgeYears: profile.bodyAgeYears,
 });
 
 export const entryToDraft = (entry: RecompEntry): EntryDraft => ({

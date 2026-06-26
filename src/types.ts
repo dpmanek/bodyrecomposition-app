@@ -53,6 +53,15 @@ export interface EntryDraft {
   source: EntrySource;
 }
 
+export interface UserProfile {
+  weight: string;
+  weightUnit: WeightUnit;
+  bodyAgeYears: string;
+  skeletalMusclePercent: string;
+  visceralFatLevel: string;
+  restingMetabolismKcal: string;
+}
+
 export type ValidationIssueKind = 'missing' | 'range' | 'confidence';
 
 export interface ValidationIssue {
