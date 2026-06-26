@@ -27,6 +27,7 @@ import {
 } from 'recharts';
 import type { AppTab, EntryDraft, ExtractionResult, FieldConfidence, MeasurementField, RecompEntry } from './types';
 import { downloadFile, exportCsv, exportJson, parseBackup } from './lib/export';
+import { prepareImageForExtraction } from './lib/image';
 import { loadEntries, saveEntries, sortEntries } from './lib/storage';
 import { draftToEntry, emptyDraft, entryToDraft, validateDraft } from './lib/validation';
 import './styles.css';
@@ -137,11 +138,12 @@ function CaptureView({ accessKey, onSave }: { accessKey: string; onSave: (entry:
     setStatus('extracting');
     setMessage('');
     try {
+      const preparedImage = await prepareImageForExtraction(imageFile);
       const formData = new FormData();
-      formData.append('image', imageFile);
+      formData.append('image', preparedImage);
       const headers = accessKey.trim() ? { 'x-app-access-key': accessKey.trim() } : undefined;
       const response = await fetch('/api/extract', { method: 'POST', headers, body: formData });
-      if (!response.ok) throw new Error(await response.text());
+      if (!response.ok) throw new Error(await readableError(response));
       const result = (await response.json()) as ExtractionResult;
       setDraft((current) => ({
         ...current,
@@ -509,6 +511,16 @@ function EmptyState({ title, text }: { title: string; text: string }) {
 
 const valueToInput = (value: number | string | null | undefined) =>
   value === null || value === undefined ? '' : String(value);
+
+const readableError = async (response: Response) => {
+  const text = await response.text();
+  try {
+    const parsed = JSON.parse(text) as { error?: string; detail?: string };
+    return parsed.detail || parsed.error || `Extraction failed (${response.status})`;
+  } catch {
+    return text || `Extraction failed (${response.status})`;
+  }
+};
 
 const display = (value: number | null) => (value === null ? '-' : value);
 

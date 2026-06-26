@@ -1,9 +1,10 @@
 interface Env {
   GEMINI_API_KEY: string;
+  GEMINI_MODEL?: string;
   APP_ACCESS_KEY?: string;
 }
 
-const MODEL = 'gemini-1.5-flash';
+const DEFAULT_MODEL = 'gemini-2.5-flash';
 
 export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   if (env.APP_ACCESS_KEY && request.headers.get('x-app-access-key') !== env.APP_ACCESS_KEY) {
@@ -22,12 +23,13 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
 
   const bytes = new Uint8Array(await file.arrayBuffer());
   const base64 = toBase64(bytes);
+  const model = env.GEMINI_MODEL || DEFAULT_MODEL;
 
   const prompt =
     'Extract body composition readings from this Omron monitor display image. Return JSON only. Use null for missing or unreadable values. Do not guess. Fields: weight, weightUnit, bmi, bodyFatPercent, skeletalMusclePercent, visceralFatLevel, restingMetabolismKcal, bodyAgeYears. Include confidence scores from 0 to 1 for each field. Return exactly this shape: {"values":{"weight":number|null,"weightUnit":"lb"|"kg"|null,"bmi":number|null,"bodyFatPercent":number|null,"skeletalMusclePercent":number|null,"visceralFatLevel":number|null,"restingMetabolismKcal":number|null,"bodyAgeYears":number|null},"confidence":{"weight":number,"weightUnit":number,"bmi":number,"bodyFatPercent":number,"skeletalMusclePercent":number,"visceralFatLevel":number,"restingMetabolismKcal":number,"bodyAgeYears":number}}';
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${env.GEMINI_API_KEY}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.GEMINI_API_KEY}`,
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -47,7 +49,14 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   );
 
   if (!response.ok) {
-    return json({ error: `Gemini request failed: ${await response.text()}` }, response.status);
+    return json(
+      {
+        error: 'Gemini request failed',
+        detail: summarizeGeminiError(await response.text()),
+        model,
+      },
+      response.status,
+    );
   }
 
   const gemini = (await response.json()) as {
@@ -57,7 +66,7 @@ export const onRequestPost: PagesFunction<Env> = async ({ request, env }) => {
   if (!text) return json({ error: 'Gemini returned no text' }, 502);
 
   try {
-    return json(normalizeExtraction(JSON.parse(text)));
+    return json(normalizeExtraction(JSON.parse(stripJsonFence(text))));
   } catch {
     return json({ error: 'Gemini did not return valid JSON', raw: text }, 502);
   }
@@ -80,4 +89,20 @@ const toBase64 = (bytes: Uint8Array) => {
     binary += String.fromCharCode(byte);
   });
   return btoa(binary);
+};
+
+const stripJsonFence = (text: string) =>
+  text
+    .trim()
+    .replace(/^```(?:json)?/i, '')
+    .replace(/```$/i, '')
+    .trim();
+
+const summarizeGeminiError = (raw: string) => {
+  try {
+    const parsed = JSON.parse(raw) as { error?: { message?: string; status?: string } };
+    return [parsed.error?.status, parsed.error?.message].filter(Boolean).join(': ') || raw;
+  } catch {
+    return raw;
+  }
 };

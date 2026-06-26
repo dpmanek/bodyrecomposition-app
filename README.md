@@ -53,6 +53,7 @@ Cloudflare Pages works well for free or near-free hosting:
 - Output directory: `dist`
 - Functions directory: `functions`
 - Secret: `GEMINI_API_KEY`
+- Optional variable: `GEMINI_MODEL` defaults to `gemini-2.5-flash`
 - Optional secret: `APP_ACCESS_KEY`
 
 ## Data Model
