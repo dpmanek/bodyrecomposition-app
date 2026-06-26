@@ -56,6 +56,8 @@ Cloudflare Pages works well for free or near-free hosting:
 - Optional variable: `GEMINI_MODEL` defaults to `gemini-2.5-flash`
 - Optional secret: `APP_ACCESS_KEY`
 
+The repo also includes `wrangler.jsonc` and `src/worker.ts` for Cloudflare Workers static-asset hosting on a `workers.dev` URL. Use `npm run build` and `wrangler deploy` for that path.
+
 ## Data Model
 
 Each saved entry contains:
