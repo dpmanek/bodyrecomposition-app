@@ -84,4 +84,23 @@ export interface ValidationIssue {
   message: string;
 }
 
+export interface HealthDailySummary {
+  profileId: string;
+  day: string;
+  steps: number | null;
+  activeZoneMinutes: number | null;
+  totalCaloriesKcal: number | null;
+  sleepMinutes: number | null;
+  restingHeartRateBpm: number | null;
+  hrvMs: number | null;
+  updatedAt: string;
+}
+
+export interface GoogleHealthStatus {
+  connected: boolean;
+  connectedAt: string | null;
+  lastSyncedAt: string | null;
+  summaries: HealthDailySummary[];
+}
+
 export type AppTab = 'capture' | 'dashboard' | 'log' | 'profiles' | 'settings';

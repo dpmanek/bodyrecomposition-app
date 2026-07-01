@@ -3,9 +3,21 @@
   "name": "bodyrecomposition-app",
   "main": "src/worker.ts",
   "compatibility_date": "2026-06-26",
+  "vars": {
+    "GOOGLE_HEALTH_CLIENT_ID": "687484788629-o11o5d8l2tto50bmq4mv6g9vndqu4ljp.apps.googleusercontent.com",
+    "GOOGLE_HEALTH_REDIRECT_URI": "https://bodyrecomposition-app.dpmanek.workers.dev/api/google-health/callback"
+  },
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application"
-  }
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "bodyrecomposition-db",
+      "database_id": "cc4387b5-c006-440d-a7c8-1dba7a6b8449",
+      "migrations_dir": "migrations"
+    }
+  ]
 }

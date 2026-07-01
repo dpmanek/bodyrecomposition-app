@@ -7,6 +7,7 @@ import type {
   ValidationIssue,
   WeightUnit,
 } from '../types';
+import { estimateRestingMetabolismKcal } from './metabolism';
 
 type Range = { min: number; max: number; label: string };
 
@@ -52,14 +53,19 @@ export const emptyDraft = (profile: UserProfile): EntryDraft => ({
   source: 'manual',
 });
 
-export const profileToDraftPatch = (profile: UserProfile) => ({
-  weight: profile.weight,
-  weightUnit: profile.weightUnit,
-  skeletalMusclePercent: profile.skeletalMusclePercent,
-  visceralFatLevel: profile.visceralFatLevel,
-  restingMetabolismKcal: profile.restingMetabolismKcal,
-  bodyAgeYears: profile.ageYears,
-});
+export const profileToDraftPatch = (profile: UserProfile) => {
+  const estimatedRestingMetabolism = estimateRestingMetabolismKcal(profile);
+
+  return {
+    weight: profile.weight,
+    weightUnit: profile.weightUnit,
+    skeletalMusclePercent: profile.skeletalMusclePercent,
+    visceralFatLevel: profile.visceralFatLevel,
+    restingMetabolismKcal:
+      estimatedRestingMetabolism === null ? profile.restingMetabolismKcal : String(estimatedRestingMetabolism),
+    bodyAgeYears: profile.ageYears,
+  };
+};
 
 export const entryToDraft = (entry: RecompEntry): EntryDraft => ({
   profileId: entry.profileId,

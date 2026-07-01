@@ -1,8 +1,16 @@
+import { handleSyncRequest } from './sync-api';
+import { handleGoogleHealthRequest } from './google-health-api';
+
 interface Env {
   ASSETS: Fetcher;
   GEMINI_API_KEY: string;
   GEMINI_MODEL?: string;
   APP_ACCESS_KEY?: string;
+  DB?: D1Database;
+  GOOGLE_HEALTH_CLIENT_ID?: string;
+  GOOGLE_HEALTH_CLIENT_SECRET?: string;
+  GOOGLE_HEALTH_REDIRECT_URI?: string;
+  GOOGLE_HEALTH_TOKEN_KEY?: string;
 }
 
 const DEFAULT_MODEL = 'gemini-2.5-flash';
@@ -17,6 +25,14 @@ const worker = {
       }
 
       return extract(request, env);
+    }
+
+    if (url.pathname === '/api/sync') {
+      return handleSyncRequest(request, env);
+    }
+
+    if (url.pathname.startsWith('/api/google-health/')) {
+      return handleGoogleHealthRequest(request, env, url.pathname);
     }
 
     return env.ASSETS.fetch(request);

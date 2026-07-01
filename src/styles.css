@@ -171,6 +171,15 @@ button:disabled {
   color: var(--cyan);
 }
 
+.watch-panel {
+  background: linear-gradient(135deg, #f5fbff 0%, #ffffff 68%);
+}
+
+.watch-panel .section-heading svg,
+.health-panel .section-heading > svg {
+  color: var(--blue);
+}
+
 .capture-panel {
   background: #ffffff;
 }
@@ -399,6 +408,11 @@ button:disabled {
   color: var(--warn);
 }
 
+.watch-panel .metric-card {
+  min-height: 88px;
+  background: rgba(255, 255, 255, 0.82);
+}
+
 .chart-wrap {
   width: 100%;
   height: 250px;
@@ -542,6 +556,67 @@ button:disabled {
   background: var(--surface);
 }
 
+.health-panel {
+  background: linear-gradient(145deg, #f4fbff 0%, #ffffff 66%, #f1fbf8 100%);
+}
+
+.connection-badge {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  background: #ffffff;
+  font-size: 0.76rem;
+  font-weight: 850;
+  white-space: nowrap;
+}
+
+.connection-badge.connected {
+  color: var(--accent-strong);
+  border-color: #a9ddd7;
+  background: var(--surface-strong);
+}
+
+.health-connect-button {
+  width: 100%;
+}
+
+.health-summary-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.health-summary-row > div {
+  min-width: 0;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, 0.82);
+  display: grid;
+  gap: 4px;
+}
+
+.health-summary-row span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.health-summary-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 0.88rem;
+}
+
+.error-note {
+  color: var(--danger);
+}
+
 code {
   color: #0a6d66;
   font-size: 0.9em;
@@ -615,5 +690,9 @@ code {
 
   .profile-list {
     grid-template-columns: repeat(2, 1fr);
+  }
+
+  .watch-grid {
+    grid-template-columns: repeat(4, 1fr);
   }
 }

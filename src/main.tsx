@@ -5,19 +5,26 @@ import {
   Camera,
   CheckCircle2,
   CirclePlus,
+  Cloud,
+  CloudOff,
   Database,
   Download,
   FileUp,
+  HeartPulse,
+  Link2,
   LineChart,
   NotebookTabs,
+  RefreshCw,
   Save,
   Settings,
   Sparkles,
   Trash2,
+  Unplug,
   Upload,
   UserRound,
   UsersRound,
   WandSparkles,
+  Watch,
 } from 'lucide-react';
 import {
   CartesianGrid,
@@ -33,13 +40,31 @@ import type {
   EntryDraft,
   ExtractionResult,
   FieldConfidence,
+  GoogleHealthStatus,
+  HealthDailySummary,
   MeasurementField,
   ProfileSex,
   RecompEntry,
   UserProfile,
 } from './types';
+import {
+  deletedCloudRecord,
+  entryCloudRecord,
+  flushCloudQueue,
+  profileCloudRecord,
+  queueCloudRecords,
+  syncWithCloud,
+  type CloudRecord,
+} from './lib/cloud-sync';
 import { downloadFile, exportCsv, exportJson, parseBackup } from './lib/export';
+import {
+  beginGoogleHealthConnection,
+  disconnectGoogleHealth,
+  getGoogleHealthStatus,
+  syncGoogleHealth,
+} from './lib/google-health';
 import { prepareImageForExtraction } from './lib/image';
+import { estimateRestingMetabolismKcal } from './lib/metabolism';
 import { loadActiveProfileId, loadProfiles, saveActiveProfileId, saveProfiles } from './lib/profile';
 import { loadEntries, saveEntries, sortEntries } from './lib/storage';
 import {
@@ -56,6 +81,16 @@ type ProfileField = keyof Pick<
   UserProfile,
   'weight' | 'ageYears' | 'height' | 'skeletalMusclePercent' | 'visceralFatLevel' | 'restingMetabolismKcal'
 >;
+
+type SyncStatus = 'local' | 'syncing' | 'synced' | 'error';
+type HealthRequestStatus = 'idle' | 'loading' | 'syncing' | 'error';
+
+const emptyHealthStatus: GoogleHealthStatus = {
+  connected: false,
+  connectedAt: null,
+  lastSyncedAt: null,
+  summaries: [],
+};
 
 const tabs: Array<{ id: AppTab; label: string; icon: React.ReactNode }> = [
   { id: 'capture', label: 'Capture', icon: <Camera size={20} /> },
@@ -76,15 +111,24 @@ const profileFields: Array<{ key: ProfileField; label: string; suffix?: string; 
   { key: 'height', label: 'Height', step: '0.1' },
   { key: 'skeletalMusclePercent', label: 'Skeletal muscle', suffix: '%', step: '0.1' },
   { key: 'visceralFatLevel', label: 'Visceral fat', step: '1' },
-  { key: 'restingMetabolismKcal', label: 'Resting metabolism', suffix: 'kcal', step: '1' },
+  { key: 'restingMetabolismKcal', label: 'Estimated resting metabolism', suffix: 'kcal', step: '1' },
 ];
 
 function App() {
-  const [activeTab, setActiveTab] = useState<AppTab>('capture');
+  const [activeTab, setActiveTab] = useState<AppTab>(() =>
+    new URLSearchParams(window.location.search).has('googleHealth') ? 'settings' : 'capture',
+  );
   const [entries, setEntries] = useState<RecompEntry[]>(() => loadEntries());
   const [profiles, setProfiles] = useState<UserProfile[]>(() => loadProfiles());
   const [activeProfileId, setActiveProfileId] = useState<string | null>(() => loadActiveProfileId(loadProfiles()));
   const [accessKey, setAccessKey] = useState(() => localStorage.getItem('recomptrack.accessKey.v1') ?? '');
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(accessKey.trim() ? 'syncing' : 'local');
+  const [syncMessage, setSyncMessage] = useState(
+    accessKey.trim() ? 'Connecting to cloud…' : 'Add an access key to enable cloud sync.',
+  );
+  const [health, setHealth] = useState<GoogleHealthStatus>(emptyHealthStatus);
+  const [healthRequestStatus, setHealthRequestStatus] = useState<HealthRequestStatus>('idle');
+  const [healthMessage, setHealthMessage] = useState('');
 
   const activeProfile = useMemo(
     () => profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0],
@@ -121,13 +165,180 @@ function App() {
     }
   }, [accessKey]);
 
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const result = params.get('googleHealth');
+    if (!result) return;
+    setHealthMessage(
+      result === 'connected'
+        ? 'Google Health connected. Sync your latest watch data when ready.'
+        : params.get('message') || 'Google Health could not be connected.',
+    );
+    if (result === 'error') setHealthRequestStatus('error');
+    window.history.replaceState({}, '', `${window.location.pathname}${window.location.hash}`);
+  }, []);
+
+  useEffect(() => {
+    const key = accessKey.trim();
+    const profileId = activeProfile?.id;
+    if (!key || !profileId) {
+      setHealth(emptyHealthStatus);
+      setHealthRequestStatus('idle');
+      return;
+    }
+
+    let cancelled = false;
+    setHealthRequestStatus('loading');
+    void getGoogleHealthStatus(key, profileId)
+      .then((result) => {
+        if (cancelled) return;
+        setHealth(result);
+        setHealthRequestStatus('idle');
+        setHealthMessage((current) => current.startsWith('Google Health connected.') ? current : '');
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setHealth(emptyHealthStatus);
+        setHealthRequestStatus('error');
+        setHealthMessage(error instanceof Error ? error.message : 'Google Health status could not be loaded.');
+      });
+    return () => { cancelled = true; };
+  }, [accessKey, activeProfile?.id]);
+
+  useEffect(() => {
+    const key = accessKey.trim();
+    if (!key) {
+      setSyncStatus('local');
+      setSyncMessage('Add an access key to enable cloud sync.');
+      return;
+    }
+
+    let cancelled = false;
+    const run = async () => {
+      setSyncStatus('syncing');
+      setSyncMessage('Syncing changes…');
+      try {
+        const result = await syncWithCloud(key, loadEntries(), loadProfiles());
+        if (cancelled) return;
+        setEntries(sortEntries(result.entries));
+        if (result.profiles.length) setProfiles(result.profiles);
+        setSyncStatus('synced');
+        setSyncMessage('Cloud data is up to date.');
+      } catch (error) {
+        if (cancelled) return;
+        setSyncStatus('error');
+        setSyncMessage(error instanceof Error ? error.message : 'Cloud sync failed');
+      }
+    };
+
+    const timer = window.setTimeout(run, 700);
+    window.addEventListener('focus', run);
+    window.addEventListener('online', run);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', run);
+      window.removeEventListener('online', run);
+    };
+  }, [accessKey]);
+
+  const flushChanges = (records: CloudRecord[]) => {
+    queueCloudRecords(records);
+    const key = accessKey.trim();
+    if (!key) return;
+    setSyncStatus('syncing');
+    setSyncMessage('Syncing changes…');
+    void flushCloudQueue(key)
+      .then(() => {
+        setSyncStatus('synced');
+        setSyncMessage('Cloud data is up to date.');
+      })
+      .catch((error) => {
+        setSyncStatus('error');
+        setSyncMessage(error instanceof Error ? error.message : 'Changes are queued for retry.');
+      });
+  };
+
+  const syncNow = async () => {
+    const key = accessKey.trim();
+    if (!key) {
+      setSyncStatus('local');
+      setSyncMessage('Enter the app access key first.');
+      return;
+    }
+    setSyncStatus('syncing');
+    setSyncMessage('Syncing changes…');
+    try {
+      const result = await syncWithCloud(key, entries, profiles);
+      setEntries(sortEntries(result.entries));
+      if (result.profiles.length) setProfiles(result.profiles);
+      setSyncStatus('synced');
+      setSyncMessage('Cloud data is up to date.');
+    } catch (error) {
+      setSyncStatus('error');
+      setSyncMessage(error instanceof Error ? error.message : 'Cloud sync failed');
+    }
+  };
+
+  const connectHealth = async () => {
+    const key = accessKey.trim();
+    if (!key) {
+      setHealthRequestStatus('error');
+      setHealthMessage('Enter the app access key under Cloud sync first.');
+      return;
+    }
+    setHealthRequestStatus('loading');
+    setHealthMessage('Opening Google authorization…');
+    try {
+      const result = await beginGoogleHealthConnection(key, activeProfile.id);
+      window.location.assign(result.authorizationUrl);
+    } catch (error) {
+      setHealthRequestStatus('error');
+      setHealthMessage(error instanceof Error ? error.message : 'Google Health connection failed.');
+    }
+  };
+
+  const syncHealth = async () => {
+    const key = accessKey.trim();
+    if (!key) return;
+    setHealthRequestStatus('syncing');
+    setHealthMessage('Syncing 14 days of watch summaries…');
+    try {
+      const result = await syncGoogleHealth(key, activeProfile.id);
+      setHealth(result);
+      setHealthRequestStatus('idle');
+      setHealthMessage('Pixel Watch summaries are up to date.');
+    } catch (error) {
+      setHealthRequestStatus('error');
+      setHealthMessage(error instanceof Error ? error.message : 'Google Health sync failed.');
+    }
+  };
+
+  const disconnectHealth = async () => {
+    if (!window.confirm(`Disconnect Google Health from ${activeProfile.name} and remove imported watch summaries?`)) return;
+    const key = accessKey.trim();
+    if (!key) return;
+    setHealthRequestStatus('loading');
+    try {
+      const result = await disconnectGoogleHealth(key, activeProfile.id);
+      setHealth(result);
+      setHealthRequestStatus('idle');
+      setHealthMessage('Google Health disconnected and imported summaries removed.');
+    } catch (error) {
+      setHealthRequestStatus('error');
+      setHealthMessage(error instanceof Error ? error.message : 'Google Health could not be disconnected.');
+    }
+  };
+
   const upsertEntry = (entry: RecompEntry) => {
     setEntries((current) => sortEntries([entry, ...current.filter((item) => item.id !== entry.id)]));
+    flushChanges([entryCloudRecord(entry)]);
   };
 
   const deleteEntry = (id: string) => {
     if (window.confirm('Delete this entry?')) {
       setEntries((current) => current.filter((item) => item.id !== id));
+      flushChanges([deletedCloudRecord('entry', id)]);
     }
   };
 
@@ -138,17 +349,21 @@ function App() {
       const exists = current.some((item) => item.id === savedProfile.id);
       return exists ? current.map((item) => (item.id === savedProfile.id ? savedProfile : item)) : [...current, savedProfile];
     });
-    setEntries((current) =>
-      current.map((entry) =>
-        entry.profileId === savedProfile.id ? { ...entry, profileName: savedProfile.name, updatedAt } : entry,
-      ),
+    const renamedEntries = entries.map((entry) =>
+      entry.profileId === savedProfile.id ? { ...entry, profileName: savedProfile.name, updatedAt } : entry,
     );
+    setEntries(renamedEntries);
+    flushChanges([
+      profileCloudRecord(savedProfile),
+      ...renamedEntries.filter((entry) => entry.profileId === savedProfile.id).map(entryCloudRecord),
+    ]);
     setActiveProfileId(savedProfile.id);
   };
 
   const addProfile = () => {
     const profile = createProfile(`Profile ${profiles.length + 1}`);
     setProfiles((current) => [...current, profile]);
+    flushChanges([profileCloudRecord(profile)]);
     setActiveProfileId(profile.id);
     setActiveTab('profiles');
   };
@@ -157,6 +372,7 @@ function App() {
     if (profiles.length <= 1) return;
     if (!window.confirm('Delete this profile? Existing readings stay in the log as historical entries.')) return;
     setProfiles((current) => current.filter((profile) => profile.id !== profileId));
+    flushChanges([deletedCloudRecord('profile', profileId)]);
     if (activeProfileId === profileId) {
       setActiveProfileId(profiles.find((profile) => profile.id !== profileId)?.id ?? null);
     }
@@ -189,7 +405,9 @@ function App() {
             onSave={upsertEntry}
           />
         )}
-        {activeTab === 'dashboard' && <DashboardView profile={activeProfile} entries={activeEntries} />}
+        {activeTab === 'dashboard' && (
+          <DashboardView profile={activeProfile} entries={activeEntries} healthSummaries={health.summaries} />
+        )}
         {activeTab === 'log' && (
           <LogView
             profile={activeProfile}
@@ -213,13 +431,27 @@ function App() {
           <SettingsView
             accessKey={accessKey}
             entries={entries}
+            health={health}
+            healthMessage={healthMessage}
+            healthRequestStatus={healthRequestStatus}
             profiles={profiles}
+            profile={activeProfile}
             onAccessKeyChange={setAccessKey}
+            onConnectHealth={connectHealth}
+            onDisconnectHealth={disconnectHealth}
+            onSync={syncNow}
+            onSyncHealth={syncHealth}
+            syncMessage={syncMessage}
+            syncStatus={syncStatus}
             onImport={(importedEntries, importedProfiles) => {
               if (importedProfiles.length) {
                 setProfiles((current) => mergeProfiles(current, importedProfiles));
               }
               setEntries((current) => mergeEntries(current, importedEntries));
+              flushChanges([
+                ...importedProfiles.map(profileCloudRecord),
+                ...importedEntries.map(entryCloudRecord),
+              ]);
             }}
           />
         )}
@@ -320,7 +552,7 @@ function CaptureView({
   };
 
   const saveDraft = () => {
-    onSave(draftToEntry(draft));
+    onSave(draftToEntry(withEstimatedRestingMetabolism(draft, profile)));
     setDraft(emptyDraft(profile));
     setConfidence({});
     setImageFile(null);
@@ -514,12 +746,21 @@ function ReadingForm({
   );
 }
 
-function DashboardView({ entries, profile }: { entries: RecompEntry[]; profile: UserProfile }) {
+function DashboardView({
+  entries,
+  healthSummaries,
+  profile,
+}: {
+  entries: RecompEntry[];
+  healthSummaries: HealthDailySummary[];
+  profile: UserProfile;
+}) {
   const latest = entries[0];
   const previous = entries[1];
   const chartData = useMemo(() => chartRows(entries), [entries]);
   const fatDelta = latest && previous ? delta(latest.bodyFatPercent, previous.bodyFatPercent) : null;
   const bmiDelta = latest && previous ? delta(latest.bmi, previous.bmi) : null;
+  const latestHealth = healthSummaries[0];
 
   if (!entries.length) {
     return <EmptyState title="No readings for this profile" text="Capture the first FAT% and BMI reading to unlock the dashboard." />;
@@ -541,6 +782,29 @@ function DashboardView({ entries, profile }: { entries: RecompEntry[]; profile: 
         <MetricCard label="BMI" value={display(latest.bmi)} delta={bmiDelta} />
         <MetricCard label="Weight" value={`${display(latest.weight)} ${latest.weightUnit}`} />
       </section>
+
+      {latestHealth ? (
+        <section className="panel watch-panel">
+          <div className="section-heading">
+            <div>
+              <span className="eyebrow">Pixel Watch</span>
+              <h2>Daily context</h2>
+              <p>{formatHealthDay(latestHealth.day)} · Google Health summary</p>
+            </div>
+            <Watch size={23} />
+          </div>
+          <div className="metric-grid watch-grid">
+            <MetricCard label="Steps" value={displayWhole(latestHealth.steps)} />
+            <MetricCard label="Sleep" value={displayMinutes(latestHealth.sleepMinutes)} />
+            <MetricCard label="Resting HR" value={displayUnit(latestHealth.restingHeartRateBpm, 'bpm')} />
+            <MetricCard label="Zone minutes" value={displayWhole(latestHealth.activeZoneMinutes)} />
+          </div>
+          <p className="muted-note">
+            {latestHealth.totalCaloriesKcal === null ? 'Calorie estimate unavailable' : `${latestHealth.totalCaloriesKcal.toLocaleString()} kcal estimated burn`}
+            {latestHealth.hrvMs === null ? '' : ` · HRV ${latestHealth.hrvMs} ms`}
+          </p>
+        </section>
+      ) : null}
 
       <section className="panel">
         <div className="section-heading">
@@ -619,7 +883,7 @@ function LogView({
               className="primary"
               type="button"
               onClick={() => {
-                onSave(draftToEntry(draft, editing));
+                onSave(draftToEntry(withEstimatedRestingMetabolism(draft, profile), editing));
                 setEditingId(null);
               }}
             >
@@ -740,6 +1004,7 @@ function ProfileForm({
   profile: UserProfile;
 }) {
   const [draft, setDraft] = useState(profile);
+  const estimatedRestingMetabolism = estimateRestingMetabolismKcal(draft);
 
   useEffect(() => setDraft(profile), [profile]);
 
@@ -783,9 +1048,15 @@ function ProfileForm({
             <div className="input-with-suffix">
               <input
                 inputMode="decimal"
+                placeholder={field.key === 'restingMetabolismKcal' ? 'Requires male/female + details' : undefined}
+                readOnly={field.key === 'restingMetabolismKcal'}
                 step={field.step}
                 type="number"
-                value={draft[field.key]}
+                value={
+                  field.key === 'restingMetabolismKcal'
+                    ? estimatedRestingMetabolism ?? ''
+                    : draft[field.key]
+                }
                 onChange={(event) => update({ [field.key]: event.target.value })}
               />
               {profileSuffix(field.key, draft, field.suffix) ? <em>{profileSuffix(field.key, draft, field.suffix)}</em> : null}
@@ -800,7 +1071,18 @@ function ProfileForm({
       </label>
 
       <div className="action-row">
-        <button className="primary" type="button" onClick={() => onSave({ ...draft, name: draft.name.trim() || 'Unnamed profile' })}>
+        <button
+          className="primary"
+          type="button"
+          onClick={() =>
+            onSave({
+              ...draft,
+              name: draft.name.trim() || 'Unnamed profile',
+              restingMetabolismKcal:
+                estimatedRestingMetabolism === null ? '' : String(estimatedRestingMetabolism),
+            })
+          }
+        >
           <Save size={18} /> Save profile
         </button>
         <button className="danger subtle" type="button" disabled={!canDelete} onClick={onDelete}>
@@ -814,15 +1096,35 @@ function ProfileForm({
 function SettingsView({
   accessKey,
   entries,
+  health,
+  healthMessage,
+  healthRequestStatus,
   profiles,
+  profile,
   onAccessKeyChange,
+  onConnectHealth,
+  onDisconnectHealth,
   onImport,
+  onSync,
+  onSyncHealth,
+  syncMessage,
+  syncStatus,
 }: {
   accessKey: string;
   entries: RecompEntry[];
+  health: GoogleHealthStatus;
+  healthMessage: string;
+  healthRequestStatus: HealthRequestStatus;
   profiles: UserProfile[];
+  profile: UserProfile;
   onAccessKeyChange: (value: string) => void;
+  onConnectHealth: () => void;
+  onDisconnectHealth: () => void;
   onImport: (entries: RecompEntry[], profiles: UserProfile[]) => void;
+  onSync: () => void;
+  onSyncHealth: () => void;
+  syncMessage: string;
+  syncStatus: SyncStatus;
 }) {
   const [message, setMessage] = useState('');
 
@@ -839,11 +1141,62 @@ function SettingsView({
 
   return (
     <div className="view-stack">
+      <section className="panel health-panel">
+        <div className="section-heading">
+          <div>
+            <span className="eyebrow">Wearable connection</span>
+            <h2>Google Health</h2>
+            <p>Read-only Pixel Watch summaries for {profile.name}.</p>
+          </div>
+          <div className={`connection-badge ${health.connected ? 'connected' : ''}`}>
+            <HeartPulse size={17} />
+            {health.connected ? 'Connected' : 'Not connected'}
+          </div>
+        </div>
+
+        {health.connected ? (
+          <>
+            <div className="health-summary-row">
+              <div>
+                <span>Latest watch day</span>
+                <strong>{health.summaries[0] ? formatHealthDay(health.summaries[0].day) : 'Not synced yet'}</strong>
+              </div>
+              <div>
+                <span>Last sync</span>
+                <strong>{health.lastSyncedAt ? formatDateTime(health.lastSyncedAt) : 'Ready to sync'}</strong>
+              </div>
+            </div>
+            <div className="action-row">
+              <button className="primary" type="button" disabled={healthRequestStatus === 'syncing'} onClick={onSyncHealth}>
+                <RefreshCw size={18} /> {healthRequestStatus === 'syncing' ? 'Syncing…' : 'Sync watch'}
+              </button>
+              <button type="button" disabled={healthRequestStatus === 'loading'} onClick={onDisconnectHealth}>
+                <Unplug size={18} /> Disconnect
+              </button>
+            </div>
+          </>
+        ) : (
+          <button
+            className="primary health-connect-button"
+            type="button"
+            disabled={!accessKey.trim() || healthRequestStatus === 'loading'}
+            onClick={onConnectHealth}
+          >
+            <Link2 size={18} /> {healthRequestStatus === 'loading' ? 'Preparing…' : 'Connect Google Health'}
+          </button>
+        )}
+        <p className={`muted-note ${healthRequestStatus === 'error' ? 'error-note' : ''}`}>
+          {healthMessage || (accessKey.trim()
+            ? 'Imports steps, sleep, activity, estimated calories, resting heart rate, and HRV.'
+            : 'Enter the cloud access key below before connecting.')}
+        </p>
+      </section>
+
       <section className="panel">
         <div className="section-heading">
           <div>
             <h2>Backup</h2>
-            <p>{entries.length} readings and {profiles.length} profiles stay in this browser.</p>
+            <p>{entries.length} readings and {profiles.length} profiles are cached in this browser.</p>
           </div>
         </div>
         <div className="settings-actions">
@@ -862,22 +1215,33 @@ function SettingsView({
       </section>
 
       <section className="panel quiet">
-        <h2>Gemini proxy</h2>
-        <p>Store an optional app access key here only if your Worker uses <code>APP_ACCESS_KEY</code>.</p>
+        <div className="section-heading">
+          <div>
+            <h2>Cloud sync</h2>
+            <p>Use the same access key on every device to share profiles and readings.</p>
+          </div>
+          {syncStatus === 'error' || syncStatus === 'local' ? <CloudOff size={22} /> : <Cloud size={22} />}
+        </div>
         <label className="input-field access-key-field">
           <span>App access key</span>
           <input
             type="password"
             value={accessKey}
             onChange={(event) => onAccessKeyChange(event.target.value)}
-            placeholder="Optional"
+            placeholder="Required for private sync"
           />
         </label>
+        <div className="action-row">
+          <button type="button" disabled={syncStatus === 'syncing'} onClick={onSync}>
+            <RefreshCw size={18} /> {syncStatus === 'syncing' ? 'Syncing…' : 'Sync now'}
+          </button>
+          <p className="muted-note">{syncMessage}</p>
+        </div>
       </section>
 
       <section className="panel quiet">
         <h2>Local-first privacy</h2>
-        <p>Profiles, logs, and notes are saved in this browser. Photos are used for extraction and are not stored.</p>
+        <p>Profiles, logs, and notes remain available locally when offline. Photos are used for extraction and are not stored.</p>
       </section>
     </div>
   );
@@ -964,6 +1328,23 @@ const chartRows = (entries: RecompEntry[]) =>
     weight: entry.weight,
   }));
 
+const formatHealthDay = (day: string) =>
+  new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+
+const formatDateTime = (value: string) =>
+  new Date(value).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+
+const displayWhole = (value: number | null) => value === null ? '—' : Math.round(value).toLocaleString();
+
+const displayUnit = (value: number | null, unit: string) => value === null ? '—' : `${Math.round(value)} ${unit}`;
+
+const displayMinutes = (value: number | null) => {
+  if (value === null) return '—';
+  const hours = Math.floor(value / 60);
+  const minutes = value % 60;
+  return `${hours}h ${minutes}m`;
+};
+
 const profileSummary = (profile: UserProfile) => {
   const parts = [
     profile.weight ? `${profile.weight} ${profile.weightUnit}` : '',
@@ -977,6 +1358,20 @@ const profileSuffix = (field: ProfileField, profile: UserProfile, fallback?: str
   if (field === 'weight') return profile.weightUnit;
   if (field === 'height') return profile.heightUnit;
   return fallback;
+};
+
+const withEstimatedRestingMetabolism = (draft: EntryDraft, profile: UserProfile): EntryDraft => {
+  const estimate = estimateRestingMetabolismKcal({
+    ...profile,
+    ageYears: draft.bodyAgeYears,
+    weight: draft.weight,
+    weightUnit: draft.weightUnit,
+  });
+
+  return {
+    ...draft,
+    restingMetabolismKcal: estimate === null ? '' : String(estimate),
+  };
 };
 
 const delta = (current: number | null, previous: number | null) => {
